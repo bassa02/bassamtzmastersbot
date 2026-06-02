@@ -33,7 +33,6 @@ LOGIST_CHAT_IDS  = {}  # username → chat_id
 REMINDER_TIMES = {
     "Дати":        30 * 60,       # 30 хвилин
     "Підряд":      60 * 60,       # 1 година
-    "Послуги":     60 * 60,       # 1 година
     "Склад":       12 * 60 * 60,  # 12 годин
     "Компенсація": 12 * 60 * 60,  # 12 годин
 }
@@ -59,6 +58,8 @@ STRUCTURE = {
         "🪵 Шпонування":           "@TsapiukM",
         "🪨 Камінь":               "@B_DH_1",
         "🗜 Прес / Склеювання":    "@TsapiukM",
+        "🏗 Метал":                "@Ievgenanosov",
+        "🌲 Дерево / Масив":       "@Ievgenanosov",
     },
     "Дати": {
         "📦 Матеріал": None,
@@ -89,7 +90,6 @@ COMP_TAG  = "@B_DH_1"
 REPLY_HINT = {
     "Склад":       "📋 _Вкажіть у відповіді: №видаткової накладної_",
     "Підряд":      "📋 _Вкажіть у відповіді: дату орієнтовної готовності_",
-    "Послуги":     "📋 _Вкажіть у відповіді: дату орієнтовної готовності_",
     "Дати":        "📋 _Вкажіть у відповіді: актуальну дату_",
     "Компенсація": "📋 _Вкажіть у відповіді: підтвердження або коментар_",
 }
@@ -192,11 +192,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         LOGIST_CHAT_IDS[uname] = user.id
 
     kb = [
-        [InlineKeyboardButton("🏭 Склад",        callback_data="dept_Склад")],
-        [InlineKeyboardButton("🔨 Підряд",        callback_data="dept_Підряд")],
-        [InlineKeyboardButton("🛠 Послуги",       callback_data="dept_Послуги")],
-        [InlineKeyboardButton("📅 Дати",          callback_data="dept_Дати")],
-        [InlineKeyboardButton("💰 Компенсація",   callback_data="dept_Компенсація")],
+        [InlineKeyboardButton("🏭 Склад — отримати матеріали зі складу",         callback_data="dept_Склад")],
+        [InlineKeyboardButton("🔨 Підряд — передати деталі в роботу",            callback_data="dept_Підряд")],
+        [InlineKeyboardButton("📅 Дати — уточнити терміни по матеріалу/підряду", callback_data="dept_Дати")],
+        [InlineKeyboardButton("💰 Компенсація — відшкодування витрат",           callback_data="dept_Компенсація")],
     ]
     await update.message.reply_text(
         "👋 Вітаю!\n\nОберіть тип запиту:",
