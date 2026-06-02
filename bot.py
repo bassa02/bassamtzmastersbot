@@ -3,7 +3,7 @@ import os
 import json
 import asyncio
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes, ConversationHandler,
@@ -33,6 +33,7 @@ LOGIST_CHAT_IDS  = {}  # username → chat_id
 REMINDER_TIMES = {
     "Дати":        30 * 60,       # 30 хвилин
     "Підряд":      60 * 60,       # 1 година
+    "Послуги":     60 * 60,       # 1 година
     "Склад":       12 * 60 * 60,  # 12 годин
     "Компенсація": 12 * 60 * 60,  # 12 годин
 }
@@ -64,6 +65,22 @@ STRUCTURE = {
         "🔨 Підряд":   None,
     },
     "Компенсація": {},
+    "Послуги": {
+        "🪨 Виготовлення виробу з каменю":              "@B_DH_1",
+        "🪵 Виготовлення деталей з масиву":             "@Ievgenanosov",
+        "🏗 Виготовлення деталей з металу":             "@Ievgenanosov",
+        "🔪 Виготовлення столярних ножів":              "@TsapiukM",
+        "🚪 Виготовлення фасадів (алюміній/мдф/дерево)":"@Ievgenanosov",
+        "🧴 Оздоблення шкірою/тканиною/шпалерами":     "@B_DH_1",
+        "✨ Нанесення нітріт титану":                   "@Ievgenanosov",
+        "⚙️ Фрезерування та токарна обробка металу":   "@Ievgenanosov",
+        "🎨 Порошкове фарбування":                     "@Ievgenanosov",
+        "🗜 Склейка / Сшивка":                          "@TsapiukM",
+        "🖌 Фарбування деталей":                        "@B_DH_1",
+        "📐 Фрезерування плитного матеріалу":           "@Yuliia_lohanets",
+        "🪵 Шпонування":                                "@TsapiukM",
+        "🖨 3D друк":                                   "@Ievgenanosov",
+    },
 }
 
 DATES_TAG = "@TsapiukM @Ievgenanosov @Yuliia_lohanets @B_DH_1"
@@ -72,6 +89,7 @@ COMP_TAG  = "@B_DH_1"
 REPLY_HINT = {
     "Склад":       "📋 _Вкажіть у відповіді: №видаткової накладної_",
     "Підряд":      "📋 _Вкажіть у відповіді: дату орієнтовної готовності_",
+    "Послуги":     "📋 _Вкажіть у відповіді: дату орієнтовної готовності_",
     "Дати":        "📋 _Вкажіть у відповіді: актуальну дату_",
     "Компенсація": "📋 _Вкажіть у відповіді: підтвердження або коментар_",
 }
@@ -176,6 +194,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("🏭 Склад",        callback_data="dept_Склад")],
         [InlineKeyboardButton("🔨 Підряд",        callback_data="dept_Підряд")],
+        [InlineKeyboardButton("🛠 Послуги",       callback_data="dept_Послуги")],
         [InlineKeyboardButton("📅 Дати",          callback_data="dept_Дати")],
         [InlineKeyboardButton("💰 Компенсація",   callback_data="dept_Компенсація")],
     ]
