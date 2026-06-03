@@ -754,22 +754,16 @@ async def step_reject_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Сповіщення в групу
     msg_map = context.bot_data.get("msg_map", {})
     info    = msg_map.get(msg_id, {})
-    tag     = ""
-    for v in STRUCTURE.values():
-        for sub_tag in v.values():
-            if sub_tag:
-                tag = sub_tag
-                break
+    tag = context.bot_data.get(f"tag_{request_id}", "")
 
     try:
         await context.bot.send_message(
             chat_id=GROUP_CHAT_ID,
             text=(
-                f"🔄 *Заявку {request_id} повернено*\n\n"
-                f"💬 Коментар бригадира: {comment}\n\n"
-                f"Будь ласка, вирішіть питання."
+                "Заявку " + request_id + " повернено\n\n"
+                "Коментар бригадира: " + comment + "\n\n"
+                + tag + " будь ласка, вирішіть питання."
             ),
-            parse_mode="Markdown",
             message_thread_id=GROUP_TOPIC_ID,
         )
     except Exception as e:
