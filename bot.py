@@ -39,44 +39,44 @@ AUTO_CLOSE_TIME = 24 * 60 * 60
 
 STRUCTURE = {
     "Склад": {
-        "Фурнітура":        "@TsapiukM",
-        "Метизи":           "@Yuliia_lohanets",
-        "Скло / Дзеркало":  "@Ievgenanosov",
-        "Кромка / Профіль": "@Yuliia_lohanets",
-        "Метал":            "@Yuliia_lohanets",
+        "🔩 Фурнітура":        "@TsapiukM",
+        "🔧 Метизи":           "@Yuliia_lohanets",
+        "🪟 Скло / Дзеркало":  "@Ievgenanosov",
+        "📏 Кромка / Профіль": "@Yuliia_lohanets",
+        "🏗 Метал":            "@Yuliia_lohanets",
     },
     "Підряд": {
-        "Шкіра / Тканина":      "@B_DH_1",
-        "Порошкове фарбування": "@Ievgenanosov",
-        "Шпонування":           "@TsapiukM",
-        "Камінь":               "@B_DH_1",
-        "Прес / Склеювання":    "@TsapiukM",
-        "Метал (обробка)":      "@Ievgenanosov",
-        "Дерево / Масив":       "@Ievgenanosov",
+        "🧴 Шкіра / Тканина":      "@B_DH_1",
+        "🎨 Порошкове фарбування": "@Ievgenanosov",
+        "🪵 Шпонування":           "@TsapiukM",
+        "🪨 Камінь":               "@B_DH_1",
+        "🗜 Прес / Склеювання":    "@TsapiukM",
+        "🔩 Метал (обробка)":      "@Ievgenanosov",
+        "🌲 Дерево / Масив":       "@Ievgenanosov",
     },
     "Дати": {
-        "Матеріал":      None,
-        "Послуги/Підряд": None,
+        "📦 Матеріал":      None,
+        "🛠 Послуги/Підряд": None,
     },
     "Компенсація": {},
 }
 
 DATES_SUB = {
-    "Матеріал": {
-        "Фурнітура":        "@TsapiukM",
-        "Метизи":           "@Yuliia_lohanets",
-        "Скло / Дзеркало":  "@Ievgenanosov",
-        "Кромка / Профіль": "@Yuliia_lohanets",
-        "Метал":            "@Yuliia_lohanets",
+    "📦 Матеріал": {
+        "🔩 Фурнітура":        "@TsapiukM",
+        "🔧 Метизи":           "@Yuliia_lohanets",
+        "🪟 Скло / Дзеркало":  "@Ievgenanosov",
+        "📏 Кромка / Профіль": "@Yuliia_lohanets",
+        "🏗 Метал":            "@Yuliia_lohanets",
     },
-    "Послуги/Підряд": {
-        "Шкіра / Тканина":      "@B_DH_1",
-        "Порошкове фарбування": "@Ievgenanosov",
-        "Шпонування":           "@TsapiukM",
-        "Камінь":               "@B_DH_1",
-        "Прес / Склеювання":    "@TsapiukM",
-        "Метал (обробка)":      "@Ievgenanosov",
-        "Дерево / Масив":       "@Ievgenanosov",
+    "🛠 Послуги/Підряд": {
+        "🧴 Шкіра / Тканина":      "@B_DH_1",
+        "🎨 Порошкове фарбування": "@Ievgenanosov",
+        "🪵 Шпонування":           "@TsapiukM",
+        "🪨 Камінь":               "@B_DH_1",
+        "🗜 Прес / Склеювання":    "@TsapiukM",
+        "🔩 Метал (обробка)":      "@Ievgenanosov",
+        "🌲 Дерево / Масив":       "@Ievgenanosov",
     },
 }
 
@@ -117,7 +117,7 @@ def save_to_sheet(data):
         deadline_resp = (datetime.now() + timedelta(minutes=limit_min)).strftime("%d.%m.%Y %H:%M")
         sheet.append_row([
             data["request_id"], data["created_at"], data["department"],
-            data.get("sub_type",""), data.get("priority","Звичайний"),
+            data.get("sub_type",""), data.get("priority","🟢 Звичайний"),
             data["order_num"], data["product"],
             data["details"], data.get("deadline",""),
             "Нова", "", "",
@@ -202,13 +202,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         LOGIST_CHAT_IDS[uname] = user.id
 
     kb = [
-        [InlineKeyboardButton("Склад — отримати матеріали", callback_data="dept_Склад")],
-        [InlineKeyboardButton("Підряд — передати в роботу", callback_data="dept_Підряд")],
-        [InlineKeyboardButton("Дати — уточнити терміни",    callback_data="dept_Дати")],
-        [InlineKeyboardButton("Компенсація — відшкодування", callback_data="dept_Компенсація")],
+        [InlineKeyboardButton("🏭 Склад — отримати матеріали", callback_data="dept_Склад")],
+        [InlineKeyboardButton("🔨 Підряд — передати в роботу", callback_data="dept_Підряд")],
+        [InlineKeyboardButton("📅 Дати — уточнити терміни",    callback_data="dept_Дати")],
+        [InlineKeyboardButton("💰 Компенсація — відшкодування", callback_data="dept_Компенсація")],
     ]
     await update.message.reply_text(
-        "Вітаю! Оберіть тип запиту:",
+        "👋 Вітаю! Оберіть тип запиту:",
         reply_markup=InlineKeyboardMarkup(kb)
     )
     return DEPT
@@ -225,9 +225,9 @@ async def step_dept(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await ask_priority(q, context)
 
     kb = [[InlineKeyboardButton(name, callback_data="sub_" + name)] for name in subtypes]
-    kb.append([InlineKeyboardButton("Назад", callback_data="back_start")])
+    kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_start")])
     await q.edit_message_text(
-        "Тип: " + dept + "\n\nОберіть підкатегорію:",
+        "📌 Тип: " + dept + "\n\nОберіть підкатегорію:",
         reply_markup=InlineKeyboardMarkup(kb)
     )
     return SUB_TYPE
@@ -254,7 +254,7 @@ async def step_subtype(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["dates_category"] = sub
         subsubs = DATES_SUB[sub]
         kb = [[InlineKeyboardButton(name, callback_data="datesub_" + name)] for name in subsubs]
-        kb.append([InlineKeyboardButton("Назад", callback_data="back_start")])
+        kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_start")])
         await q.edit_message_text(
             "Дати -> " + sub + "\n\nОберіть підкатегорію:",
             reply_markup=InlineKeyboardMarkup(kb)
@@ -279,8 +279,8 @@ async def ask_priority(q, context):
     sub  = context.user_data.get("sub_type", "")
     label = dept + (" -> " + sub if sub else "")
     kb = [
-        [InlineKeyboardButton("ТЕРМІНОВО", callback_data="pri_Терміново")],
-        [InlineKeyboardButton("Звичайний", callback_data="pri_Звичайний")],
+        [InlineKeyboardButton("🔴 Терміново", callback_data="pri_Терміново")],
+        [InlineKeyboardButton("🟢 Звичайний", callback_data="pri_Звичайний")],
     ]
     await q.edit_message_text(
         label + "\n\nОберіть пріоритет:",
@@ -338,22 +338,22 @@ async def show_confirm(msg: Message, context: ContextTypes.DEFAULT_TYPE):
     d    = context.user_data
     dept = d["department"]
     sub  = d.get("sub_type", "")
-    pri  = d.get("priority", "Звичайний")
+    pri  = d.get("priority", "🟢 Звичайний")
 
     text = "Перевірте заявку:\n\n"
-    text += "Пріоритет: " + pri + "\n"
-    text += "Тип: " + dept + (" -> " + sub if sub else "") + "\n"
-    text += "Замовлення: #" + d["order_num"] + "\n"
-    text += "Виріб: " + d["product"] + "\n"
-    text += "Деталі: " + d["details"] + "\n"
+    text += "⚡ Пріоритет: " + pri + "\n"
+    text += "📌 Тип: " + dept + (" -> " + sub if sub else "") + "\n"
+    text += "🔢 Замовлення: #" + d["order_num"] + "\n"
+    text += "🪑 Виріб: " + d["product"] + "\n"
+    text += "📝 Деталі: " + d["details"] + "\n"
     if d.get("deadline"):
-        text += "Дедлайн: " + d["deadline"] + "\n"
+        text += "📅 Дедлайн: " + d["deadline"] + "\n"
     if d.get("photo_id"):
         text += "Фото: додано\n"
 
     kb = [
-        [InlineKeyboardButton("Підтвердити", callback_data="confirm_yes")],
-        [InlineKeyboardButton("Почати знову", callback_data="confirm_no")],
+        [InlineKeyboardButton("✅ Підтвердити", callback_data="confirm_yes")],
+        [InlineKeyboardButton("🔄 Почати знову", callback_data="confirm_no")],
     ]
     await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
     return CONFIRM
@@ -369,7 +369,7 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d          = context.user_data
     dept       = d["department"]
     sub        = d.get("sub_type", "")
-    pri        = d.get("priority", "Звичайний")
+    pri        = d.get("priority", "🟢 Звичайний")
     request_id = next_id()
     created_at = datetime.now().strftime("%d.%m.%Y %H:%M")
     chat_id    = q.from_user.id
@@ -387,11 +387,11 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group_text = pri + " | Заявка " + request_id + "\n"
     group_text += "Від: " + user_name + "\n\n"
     group_text += dept + (" -> " + sub if sub else "") + "\n"
-    group_text += "Замовлення: #" + d["order_num"] + "\n"
-    group_text += "Виріб: " + d["product"] + "\n"
-    group_text += "Деталі: " + d["details"] + "\n"
+    group_text += "🔢 Замовлення: #" + d["order_num"] + "\n"
+    group_text += "🪑 Виріб: " + d["product"] + "\n"
+    group_text += "📝 Деталі: " + d["details"] + "\n"
     if d.get("deadline"):
-        group_text += "Дедлайн: " + d["deadline"] + "\n"
+        group_text += "📅 Дедлайн: " + d["deadline"] + "\n"
     group_text += "\n" + tag + "\n" + hint
 
     try:
@@ -510,16 +510,17 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data["answer_" + request_id] = msg.text or "—"
     context.bot_data["logist_" + request_id] = logist
     context.bot_data["time_" + request_id]   = response_time_str
+    context.bot_data["logist_msg_id_" + request_id] = msg.message_id
 
     jobs = context.job_queue.get_jobs_by_name("remind_" + request_id)
     for job in jobs:
         job.schedule_removal()
 
     kb = [
-        [InlineKeyboardButton("Виконано, дякую!", callback_data="done_" + request_id + "_" + str(replied_id))],
-        [InlineKeyboardButton("Не вирішено",      callback_data="reject_" + request_id + "_" + str(replied_id))],
+        [InlineKeyboardButton("✅ Виконано, дякую!", callback_data="done_" + request_id + "_" + str(replied_id))],
+        [InlineKeyboardButton("❌ Не вирішено",      callback_data="reject_" + request_id + "_" + str(replied_id))],
     ]
-    await context.bot.send_message(
+    bot_msg = await context.bot.send_message(
         chat_id=master_id,
         text="Відповідь на заявку " + request_id + "\n\n" +
              info["product"] + " (#" + info["order_num"] + ")\n" +
@@ -528,6 +529,8 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
              "Підтвердіть виконання або поверніть заявку:",
         reply_markup=InlineKeyboardMarkup(kb)
     )
+    context.bot_data["bot_msg_id_" + request_id] = bot_msg.message_id
+    context.bot_data["master_id_" + request_id]  = master_id
 
     context.job_queue.run_once(
         auto_close,
@@ -555,14 +558,40 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for job in jobs:
         job.schedule_removal()
 
+    # Видаляємо заявку з групи
     try:
         await context.bot.delete_message(chat_id=GROUP_CHAT_ID, message_id=msg_id)
     except Exception as e:
-        logger.error(f"Delete error: {e}")
+        logger.error(f"Delete group msg error: {e}")
+
+    # Видаляємо відповідь логіста в групі
+    logist_msg_id = context.bot_data.get("logist_msg_id_" + request_id)
+    if logist_msg_id:
+        try:
+            await context.bot.delete_message(chat_id=GROUP_CHAT_ID, message_id=logist_msg_id)
+        except Exception as e:
+            logger.error(f"Delete logist msg error: {e}")
+
+    # Видаляємо повідомлення боту бригадиру з кнопками
+    bot_msg_id = context.bot_data.get("bot_msg_id_" + request_id)
+    master_id  = context.bot_data.get("master_id_" + request_id)
+    if bot_msg_id and master_id:
+        try:
+            await context.bot.delete_message(chat_id=master_id, message_id=bot_msg_id)
+        except Exception as e:
+            logger.error(f"Delete bot msg error: {e}")
+
+    # Видаляємо повідомлення про повернення якщо було
+    reject_msg_id = context.bot_data.get("reject_msg_id_" + request_id)
+    if reject_msg_id:
+        try:
+            await context.bot.delete_message(chat_id=GROUP_CHAT_ID, message_id=reject_msg_id)
+        except Exception as e:
+            logger.error(f"Delete reject msg error: {e}")
 
     done_text = (
         "ВИКОНАНО | " + request_id + "\n" +
-        "Виріб: " + info.get("product","—") + " (#" + info.get("order_num","—") + ")\n\n" +
+        "🪑 Виріб: " + info.get("product","—") + " (#" + info.get("order_num","—") + ")\n\n" +
         "Відповідь: " + logist_answer + "\n" +
         "Логіст: " + logist_name + "\n\n" +
         "Час відповіді: " + response_time + "\n" +
@@ -610,11 +639,12 @@ async def step_reject_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
     tag     = info.get("tag", "")
 
     try:
-        await context.bot.send_message(
+        reject_msg = await context.bot.send_message(
             chat_id=GROUP_CHAT_ID,
             text="Заявку " + request_id + " повернено\n\nКоментар: " + comment + "\n\n" + tag + " будь ласка вирішіть питання.",
             message_thread_id=GROUP_TOPIC_ID,
         )
+        context.bot_data["reject_msg_id_" + request_id] = reject_msg.message_id
     except Exception as e:
         logger.error(f"Reject notify error: {e}")
 
