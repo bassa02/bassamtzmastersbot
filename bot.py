@@ -26,10 +26,10 @@ LOGIST_USERNAMES = ["TsapiukM", "Yuliia_lohanets", "Ievgenanosov", "B_DH_1"]
 LOGIST_CHAT_IDS  = {}
 
 REMINDER_TIMES = {
-    "Дати": 30 * 60,
-    "Підряд": 60 * 60,
-    "Склад": 12 * 60 * 60,
-    "Компенсація": 12 * 60 * 60,
+    "Дати":        20 * 60,       # 20 хвилин
+    "Підряд":      20 * 60,       # 20 хвилин
+    "Склад":        4 * 60 * 60,  # 4 години
+    "Компенсація":  4 * 60 * 60,  # 4 години
 }
 AUTO_CLOSE_TIME = 24 * 60 * 60
 
@@ -241,10 +241,11 @@ def save_to_sheet(data):
                 "order_num","product","details","deadline",
                 "status","manager_comment","updated_at",
                 "chat_id_master","message_id_group","logist_tag",
-                "deadline_response","responded_at","response_time_min","is_overdue"
+                "deadline_response","responded_at","response_time_min","is_overdue",
+                "reminder_count","logist_reaction_min"
             ])
         dept = data.get("department", "")
-        limit_min = {"Дати":30,"Підряд":60,"Склад":720,"Компенсація":720}.get(dept, 720)
+        limit_min = {"Дати":20,"Підряд":20,"Склад":240,"Компенсація":240}.get(dept, 240)
         deadline_resp = add_work_minutes(datetime.now(), limit_min).strftime("%d.%m.%Y %H:%M")
         sheet.append_row([
             data["request_id"], data["created_at"], data["department"],
@@ -253,7 +254,7 @@ def save_to_sheet(data):
             data["details"], data.get("deadline",""),
             "Нова", "", "",
             str(data["chat_id"]), str(data.get("message_id_group","")),
-            data.get("tag",""), deadline_resp, "", "", ""
+            data.get("tag",""), deadline_resp, "", "", "", 0, ""
         ])
     except Exception as e:
         logger.error(f"Sheet error: {e}")
@@ -597,7 +598,7 @@ async def remind_logist(context: ContextTypes.DEFAULT_TYPE):
     if rid not in [r.get("request_id") for r in requests]:
         return
 
-    time_label = {"Дати":"30 хвилин","Підряд":"1 годину","Склад":"12 годин","Компенсація":"12 годин"}.get(dept,"")
+    time_label = {"Дати":"20 хвилин","Підряд":"20 хвилин","Склад":"4 години","Компенсація":"4 години"}.get(dept,"")
     try:
         await context.bot.send_message(
             chat_id=GROUP_CHAT_ID,
@@ -625,6 +626,25 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logist     = msg.from_user.full_name
 
     update_sheet_status(request_id, "В роботі", msg.text or "", record_response=True)
+
+    # Записуємо час реакції логіста (реальний час від подачі до відповіді)
+    try:
+        sheet = get_sheet()
+        headers = sheet.row_values(1)
+        records = sheet.get_all_records()
+        for i, row in enumerate(records, start=2):
+            if str(row.get("request_id")) == str(request_id):
+                if "logist_reaction_min" in headers:
+                    created_str = str(row.get("created_at",""))
+                    try:
+                        created_dt = datetime.strptime(created_str, "%d.%m.%Y %H:%M")
+                        real_diff = int((datetime.now() - created_dt).total_seconds() / 60)
+                        sheet.update_cell(i, headers.index("logist_reaction_min")+1, real_diff)
+                    except:
+                        pass
+                break
+    except Exception as e:
+        logger.error(f"Reaction time error: {e}")
 
     now = datetime.now()
     try:
