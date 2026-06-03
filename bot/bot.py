@@ -67,22 +67,6 @@ STRUCTURE = {
         "🛠 Послуги / Підряд": None,
     },
     "Компенсація": {},
-    "Послуги": {
-        "🪨 Виготовлення виробу з каменю":              "@B_DH_1",
-        "🪵 Виготовлення деталей з масиву":             "@Ievgenanosov",
-        "🏗 Виготовлення деталей з металу":             "@Ievgenanosov",
-        "🔪 Виготовлення столярних ножів":              "@TsapiukM",
-        "🚪 Виготовлення фасадів (алюміній/мдф/дерево)":"@Ievgenanosov",
-        "🧴 Оздоблення шкірою/тканиною/шпалерами":     "@B_DH_1",
-        "✨ Нанесення нітріт титану":                   "@Ievgenanosov",
-        "⚙️ Фрезерування та токарна обробка металу":   "@Ievgenanosov",
-        "🎨 Порошкове фарбування":                     "@Ievgenanosov",
-        "🗜 Склейка / Сшивка":                          "@TsapiukM",
-        "🖌 Фарбування деталей":                        "@B_DH_1",
-        "📐 Фрезерування плитного матеріалу":           "@Yuliia_lohanets",
-        "🪵 Шпонування":                                "@TsapiukM",
-        "🖨 3D друк":                                   "@Ievgenanosov",
-    },
 }
 
 # Підкатегорії для розділу Дати
@@ -478,18 +462,19 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if d.get("photo_is_doc"):
                 group_msg = await context.bot.send_document(
                     chat_id=GROUP_CHAT_ID, document=d["photo_id"],
-                    caption=group_text,
+                    caption=group_text, parse_mode="Markdown",
                     message_thread_id=GROUP_TOPIC_ID,
                 )
             else:
                 group_msg = await context.bot.send_photo(
                     chat_id=GROUP_CHAT_ID, photo=d["photo_id"],
-                    caption=group_text,
+                    caption=group_text, parse_mode="Markdown",
                     message_thread_id=GROUP_TOPIC_ID,
                 )
         else:
             group_msg = await context.bot.send_message(
-                chat_id=GROUP_CHAT_ID, text=group_text, message_thread_id=GROUP_TOPIC_ID,
+                chat_id=GROUP_CHAT_ID, text=group_text,
+                parse_mode="Markdown", message_thread_id=GROUP_TOPIC_ID,
             )
         msg_id = group_msg.message_id
     except Exception as e:
@@ -753,16 +738,22 @@ async def step_reject_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Сповіщення в групу
     msg_map = context.bot_data.get("msg_map", {})
     info    = msg_map.get(msg_id, {})
-    tag = context.bot_data.get(f"tag_{request_id}", "")
+    tag     = ""
+    for v in STRUCTURE.values():
+        for sub_tag in v.values():
+            if sub_tag:
+                tag = sub_tag
+                break
 
     try:
         await context.bot.send_message(
             chat_id=GROUP_CHAT_ID,
             text=(
-                "Заявку " + request_id + " повернено\n\n"
-                "Коментар бригадира: " + comment + "\n\n"
-                + tag + " будь ласка, вирішіть питання."
+                f"🔄 *Заявку {request_id} повернено*\n\n"
+                f"💬 Коментар бригадира: {comment}\n\n"
+                f"Будь ласка, вирішіть питання."
             ),
+            parse_mode="Markdown",
             message_thread_id=GROUP_TOPIC_ID,
         )
     except Exception as e:
@@ -935,8 +926,7 @@ def main():
     )
 
     app.add_handler(conv)
-    app.add_handler(CallbackQueryHandler(handle_done,   pattern="^done_"))
-    app.add_handler(CallbackQueryHandler(handle_reject, pattern="^reject_"))
+    app.add_handler(CallbackQueryHandler(handle_done, pattern="^done_"))
     app.add_handler(CommandHandler("mytasks",  my_tasks))
     app.add_handler(CommandHandler("myqueue",  my_queue))
     app.add_handler(MessageHandler(
