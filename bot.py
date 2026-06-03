@@ -137,23 +137,33 @@ def calc_work_minutes(start: datetime, end: datetime) -> int:
         return 0
 
     total = 0
-    current = start
-
-    # Якщо старт поза робочим часом
-    if current.weekday() not in WORK_DAYS or current.hour >= WORK_END:
-        current = current.replace(hour=WORK_START, minute=0) + timedelta(days=1)
-        while current.weekday() not in WORK_DAYS:
-            current += timedelta(days=1)
-    elif current.hour < WORK_START:
-        current = current.replace(hour=WORK_START, minute=0)
+    current = start.replace(second=0, microsecond=0)
 
     while current < end:
+        # Пропускаємо вихідні
+        if current.weekday() not in WORK_DAYS:
+            current = current.replace(hour=WORK_START, minute=0) + timedelta(days=1)
+            while current.weekday() not in WORK_DAYS:
+                current += timedelta(days=1)
+            continue
+
+        # Якщо поза робочим часом цього дня
+        if current.hour >= WORK_END:
+            current = current.replace(hour=WORK_START, minute=0) + timedelta(days=1)
+            while current.weekday() not in WORK_DAYS:
+                current += timedelta(days=1)
+            continue
+
+        if current.hour < WORK_START:
+            current = current.replace(hour=WORK_START, minute=0)
+            continue
+
+        # Рахуємо хвилини в цьому робочому дні
         end_of_day = current.replace(hour=WORK_END, minute=0)
         day_end = min(end_of_day, end)
+        total += int((day_end - current).total_seconds() / 60)
 
-        if current.weekday() in WORK_DAYS and current.hour < WORK_END:
-            total += int((day_end - current).total_seconds() / 60)
-
+        # Переходимо на наступний день
         current = current.replace(hour=WORK_START, minute=0) + timedelta(days=1)
         while current.weekday() not in WORK_DAYS:
             current += timedelta(days=1)
@@ -449,6 +459,10 @@ async def step_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "msg_ids_to_delete" not in context.user_data:
         context.user_data["msg_ids_to_delete"] = []
     context.user_data["msg_ids_to_delete"].append(update.message.message_id)
+    try:
+        await update.message.delete()
+    except:
+        pass
     return await show_confirm(update.message, context)
 
 async def show_confirm(msg: Message, context: ContextTypes.DEFAULT_TYPE):
