@@ -90,6 +90,127 @@ REPLY_HINT = {
     "Компенсація": "Вкажіть у відповіді: підтвердження або коментар",
 }
 
+# Робочий час
+WORK_START = 9   # 9:00
+WORK_END   = 18  # 18:00
+WORK_DAYS  = [0, 1, 2, 3, 4]  # пн-пт
+
+def add_work_minutes(dt: datetime, minutes: int) -> datetime:
+    """Додає хвилини з урахуванням робочого часу пн-пт 9:00-18:00"""
+    remaining = minutes
+    current = dt
+
+    # Якщо поточний час поза робочими годинами — переносимо на початок наступного робочого дня
+    def next_work_start(d):
+        d = d.replace(second=0, microsecond=0)
+        if d.weekday() not in WORK_DAYS or d.hour >= WORK_END:
+            # Наступний робочий день
+            d = d.replace(hour=WORK_START, minute=0) + timedelta(days=1)
+            while d.weekday() not in WORK_DAYS:
+                d += timedelta(days=1)
+        elif d.hour < WORK_START:
+            d = d.replace(hour=WORK_START, minute=0)
+        return d
+
+    current = next_work_start(current)
+
+    while remaining > 0:
+        # Хвилин до кінця робочого дня
+        end_of_day = current.replace(hour=WORK_END, minute=0)
+        mins_left = int((end_of_day - current).total_seconds() / 60)
+
+        if remaining <= mins_left:
+            current += timedelta(minutes=remaining)
+            remaining = 0
+        else:
+            remaining -= mins_left
+            # Переходимо на наступний робочий день
+            current = current.replace(hour=WORK_START, minute=0) + timedelta(days=1)
+            while current.weekday() not in WORK_DAYS:
+                current += timedelta(days=1)
+
+    return current
+
+def calc_work_minutes(start: datetime, end: datetime) -> int:
+    """Рахує кількість робочих хвилин між двома датами"""
+    if end <= start:
+        return 0
+
+    total = 0
+    current = start
+
+    # Якщо старт поза робочим часом
+    if current.weekday() not in WORK_DAYS or current.hour >= WORK_END:
+        current = current.replace(hour=WORK_START, minute=0) + timedelta(days=1)
+        while current.weekday() not in WORK_DAYS:
+            current += timedelta(days=1)
+    elif current.hour < WORK_START:
+        current = current.replace(hour=WORK_START, minute=0)
+
+    while current < end:
+        end_of_day = current.replace(hour=WORK_END, minute=0)
+        day_end = min(end_of_day, end)
+
+        if current.weekday() in WORK_DAYS and current.hour < WORK_END:
+            total += int((day_end - current).total_seconds() / 60)
+
+        current = current.replace(hour=WORK_START, minute=0) + timedelta(days=1)
+        while current.weekday() not in WORK_DAYS:
+            current += timedelta(days=1)
+
+    return total
+
+def format_work_time(minutes: int) -> str:
+    """Форматує робочий час"""
+    if minutes < 60:
+        return str(minutes) + " хв"
+    h = minutes // 60
+    m = minutes % 60
+    if m == 0:
+        return str(h) + " год"
+    return str(h) + " год " + str(m) + " хв"
+
+# Лічильник в Google Sheets (другий аркуш)
+def get_next_id_from_sheet() -> str:
+    try:
+        creds_dict = json.loads(GOOGLE_CREDS)
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open_by_key(SHEET_ID)
+
+        # Шукаємо або створюємо аркуш Counter
+        try:
+            counter_sheet = spreadsheet.worksheet("Counter")
+        except:
+            counter_sheet = spreadsheet.add_worksheet(title="Counter", rows=2, cols=2)
+            counter_sheet.update("A1", [["last_id"], [0]])
+
+        val = counter_sheet.acell("B1").value
+        if not val or not str(val).isdigit():
+            # Ініціалізуємо
+            counter_sheet.update("A1", [["last_id"], [0]])
+            n = 1
+        else:
+            n = int(val) + 1
+
+        counter_sheet.update("B1", [[n]])
+        return f"REQ-{n:04d}"
+    except Exception as e:
+        logger.error(f"Counter sheet error: {e}")
+        # Fallback на файл
+        try:
+            with open(_counter_file) as f:
+                n = int(f.read().strip()) + 1
+        except:
+            n = 1
+        with open(_counter_file, "w") as f:
+            f.write(str(n))
+        return f"REQ-{n:04d}"
+
 # Google Sheets
 def get_sheet():
     creds_dict = json.loads(GOOGLE_CREDS)
@@ -114,7 +235,7 @@ def save_to_sheet(data):
             ])
         dept = data.get("department", "")
         limit_min = {"Дати":30,"Підряд":60,"Склад":720,"Компенсація":720}.get(dept, 720)
-        deadline_resp = (datetime.now() + timedelta(minutes=limit_min)).strftime("%d.%m.%Y %H:%M")
+        deadline_resp = add_work_minutes(datetime.now(), limit_min).strftime("%d.%m.%Y %H:%M")
         sheet.append_row([
             data["request_id"], data["created_at"], data["department"],
             data.get("sub_type",""), data.get("priority","🟢 Звичайний"),
@@ -181,14 +302,7 @@ def get_user_requests(chat_id):
 _counter_file = "/app/counter.txt"
 
 def next_id():
-    try:
-        with open(_counter_file) as f:
-            n = int(f.read().strip()) + 1
-    except:
-        n = 1
-    with open(_counter_file, "w") as f:
-        f.write(str(n))
-    return f"REQ-{n:04d}"
+    return get_next_id_from_sheet()
 
 # /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -332,9 +446,21 @@ async def step_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def step_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["deadline"] = update.message.text.strip()
+    if "msg_ids_to_delete" not in context.user_data:
+        context.user_data["msg_ids_to_delete"] = []
+    context.user_data["msg_ids_to_delete"].append(update.message.message_id)
     return await show_confirm(update.message, context)
 
 async def show_confirm(msg: Message, context: ContextTypes.DEFAULT_TYPE):
+    # Видаляємо всі повідомлення діалогу
+    chat_id = msg.chat_id
+    for mid in context.user_data.get("msg_ids_to_delete", []):
+        try:
+            await msg._bot.delete_message(chat_id=chat_id, message_id=mid)
+        except:
+            pass
+    context.user_data["msg_ids_to_delete"] = []
+
     d    = context.user_data
     dept = d["department"]
     sub  = d.get("sub_type", "")
@@ -497,11 +623,8 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
         if created_str:
             created_dt = datetime.strptime(created_str, "%d.%m.%Y %H:%M")
-            diff = int((now - created_dt).total_seconds() / 60)
-            if diff < 60:
-                response_time_str = str(diff) + " хв"
-            else:
-                response_time_str = str(diff // 60) + " год " + str(diff % 60) + " хв"
+            work_mins = calc_work_minutes(created_dt, now)
+            response_time_str = format_work_time(work_mins) + " (роб.)"
         else:
             response_time_str = "—"
     except:
