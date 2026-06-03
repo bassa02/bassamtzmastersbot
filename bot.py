@@ -63,7 +63,7 @@ STRUCTURE = {
     },
     "Дати": {
         "📦 Матеріал": None,
-        "🔨 Підряд":   None,
+        "🛠 Послуги / Підряд": None,
     },
     "Компенсація": {},
     "Послуги": {
@@ -81,6 +81,26 @@ STRUCTURE = {
         "📐 Фрезерування плитного матеріалу":           "@Yuliia_lohanets",
         "🪵 Шпонування":                                "@TsapiukM",
         "🖨 3D друк":                                   "@Ievgenanosov",
+    },
+}
+
+# Підкатегорії для розділу Дати
+DATES_SUB = {
+    "📦 Матеріал": {
+        "🔩 Фурнітура":        "@TsapiukM",
+        "🔧 Метизи":           "@Yuliia_lohanets",
+        "🪟 Скло / Дзеркало":  "@Ievgenanosov",
+        "📏 Кромка / Профіль": "@Yuliia_lohanets",
+        "🏗 Метал":            "@Yuliia_lohanets",
+    },
+    "🛠 Послуги / Підряд": {
+        "🧴 Шкіра / Тканина":      "@B_DH_1",
+        "🎨 Порошкове фарбування": "@Ievgenanosov",
+        "🪵 Шпонування":           "@TsapiukM",
+        "🪨 Камінь":               "@B_DH_1",
+        "🗜 Прес / Склеювання":    "@TsapiukM",
+        "🏗 Метал (обробка)":      "@Ievgenanosov",
+        "🌲 Дерево / Масив":       "@Ievgenanosov",
     },
 }
 
@@ -113,8 +133,20 @@ def save_to_sheet(data):
                 "request_id","created_at","department","sub_type","priority",
                 "order_num","product","details","deadline",
                 "status","manager_comment","updated_at",
-                "chat_id_master","message_id_group","logist_tag"
+                "chat_id_master","message_id_group","logist_tag",
+                "deadline_response","responded_at","response_time_min","is_overdue"
             ])
+        # Розраховуємо deadline_response
+        from datetime import datetime, timedelta
+        reminder_map = {
+            "Дати": 30, "Підряд": 60, "Послуги": 60,
+            "Склад": 720, "Компенсація": 720,
+        }
+        dept = data.get("department", "")
+        limit_min = reminder_map.get(dept, 720)
+        created = datetime.now()
+        deadline_resp = (created + timedelta(minutes=limit_min)).strftime("%d.%m.%Y %H:%M")
+
         sheet.append_row([
             data["request_id"], data["created_at"], data["department"],
             data.get("sub_type",""), data.get("priority","Звичайний"),
@@ -122,22 +154,46 @@ def save_to_sheet(data):
             data["details"], data.get("deadline",""),
             "Нова", "", "",
             str(data["chat_id"]), str(data.get("message_id_group","")),
-            data.get("tag","")
+            data.get("tag",""),
+            deadline_resp, "", "", ""
         ])
     except Exception as e:
         logger.error(f"Sheet error: {e}")
 
-def update_sheet_status(request_id, status, comment=""):
+def update_sheet_status(request_id, status, comment="", record_response=False):
     try:
         sheet = get_sheet()
         headers = sheet.row_values(1)
         records = sheet.get_all_records()
         for i, row in enumerate(records, start=2):
             if str(row.get("request_id")) == str(request_id):
+                now = datetime.now()
+                now_str = now.strftime("%d.%m.%Y %H:%M")
                 sheet.update_cell(i, headers.index("status")+1, status)
                 sheet.update_cell(i, headers.index("manager_comment")+1, comment)
-                sheet.update_cell(i, headers.index("updated_at")+1,
-                                  datetime.now().strftime("%d.%m.%Y %H:%M"))
+                sheet.update_cell(i, headers.index("updated_at")+1, now_str)
+
+                if record_response and "responded_at" in headers:
+                    # Час відповіді
+                    sheet.update_cell(i, headers.index("responded_at")+1, now_str)
+
+                    # Розрахунок часу в хвилинах
+                    created_str = str(row.get("created_at",""))
+                    try:
+                        created = datetime.strptime(created_str, "%d.%m.%Y %H:%M")
+                        diff_min = int((now - created).total_seconds() / 60)
+                        sheet.update_cell(i, headers.index("response_time_min")+1, diff_min)
+                    except:
+                        pass
+
+                    # Чи прострочено
+                    deadline_str = str(row.get("deadline_response",""))
+                    try:
+                        deadline_dt = datetime.strptime(deadline_str, "%d.%m.%Y %H:%M")
+                        is_overdue = "Так" if now > deadline_dt else "Ні"
+                        sheet.update_cell(i, headers.index("is_overdue")+1, is_overdue)
+                    except:
+                        sheet.update_cell(i, headers.index("is_overdue")+1, "")
                 break
     except Exception as e:
         logger.error(f"Sheet update error: {e}")
@@ -232,16 +288,44 @@ async def step_subtype(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "back_start":
         context.user_data.clear()
         kb = [
-            [InlineKeyboardButton("🏭 Склад",        callback_data="dept_Склад")],
-            [InlineKeyboardButton("🔨 Підряд",        callback_data="dept_Підряд")],
-            [InlineKeyboardButton("📅 Дати",          callback_data="dept_Дати")],
-            [InlineKeyboardButton("💰 Компенсація",   callback_data="dept_Компенсація")],
+            [InlineKeyboardButton("🏭 Склад — отримати матеріали зі складу",         callback_data="dept_Склад")],
+            [InlineKeyboardButton("🔨 Підряд — передати деталі в роботу",            callback_data="dept_Підряд")],
+            [InlineKeyboardButton("📅 Дати — уточнити терміни по матеріалу/підряду", callback_data="dept_Дати")],
+            [InlineKeyboardButton("💰 Компенсація — відшкодування витрат",           callback_data="dept_Компенсація")],
         ]
         await q.edit_message_text("Оберіть тип запиту:", reply_markup=InlineKeyboardMarkup(kb))
         return DEPT
 
     sub = q.data.replace("sub_", "")
+    dept = context.user_data.get("department", "")
+
+    # Якщо обрали Дати → показуємо підкатегорії другого рівня
+    if dept == "Дати" and sub in DATES_SUB:
+        context.user_data["dates_category"] = sub
+        subsubs = DATES_SUB[sub]
+        kb = [[InlineKeyboardButton(name, callback_data=f"datesub_{name}")] for name in subsubs]
+        kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_start")])
+        await q.edit_message_text(
+            f"📅 Дати → *{sub}*\n\nОберіть підкатегорію:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return SUB_TYPE
+
     context.user_data["sub_type"] = sub
+    return await ask_priority(q, context)
+
+async def step_datesub(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    datesub = q.data.replace("datesub_", "")
+    dates_cat = context.user_data.get("dates_category", "")
+
+    # Визначаємо тег логіста
+    tag = DATES_SUB.get(dates_cat, {}).get(datesub, DATES_TAG)
+    context.user_data["sub_type"] = f"{dates_cat} → {datesub}"
+    context.user_data["dates_tag"] = tag
+
     return await ask_priority(q, context)
 
 async def ask_priority(q, context):
@@ -370,7 +454,7 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if dept == "Компенсація":
         tag = COMP_TAG
     elif dept == "Дати":
-        tag = DATES_TAG
+        tag = context.user_data.get("dates_tag", DATES_TAG)
     else:
         tag = STRUCTURE.get(dept, {}).get(sub, "")
 
@@ -393,18 +477,19 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if d.get("photo_is_doc"):
                 group_msg = await context.bot.send_document(
                     chat_id=GROUP_CHAT_ID, document=d["photo_id"],
-                    caption=group_text,
+                    caption=group_text, parse_mode="Markdown",
                     message_thread_id=GROUP_TOPIC_ID,
                 )
             else:
                 group_msg = await context.bot.send_photo(
                     chat_id=GROUP_CHAT_ID, photo=d["photo_id"],
-                    caption=group_text,
+                    caption=group_text, parse_mode="Markdown",
                     message_thread_id=GROUP_TOPIC_ID,
                 )
         else:
             group_msg = await context.bot.send_message(
-                chat_id=GROUP_CHAT_ID, text=group_text, message_thread_id=GROUP_TOPIC_ID,
+                chat_id=GROUP_CHAT_ID, text=group_text,
+                parse_mode="Markdown", message_thread_id=GROUP_TOPIC_ID,
             )
         msg_id = group_msg.message_id
     except Exception as e:
@@ -499,8 +584,8 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request_id = info["request_id"]
     logist     = msg.from_user.full_name
 
-    # Оновлюємо статус
-    update_sheet_status(request_id, "В роботі", msg.text or "")
+    # Оновлюємо статус і записуємо час відповіді
+    update_sheet_status(request_id, "В роботі", msg.text or "", record_response=True)
 
     # Скасовуємо нагадування
     jobs = context.job_queue.get_jobs_by_name(f"remind_{request_id}")
@@ -757,7 +842,10 @@ def main():
         entry_points=[CommandHandler("start", start)],
         states={
             DEPT:           [CallbackQueryHandler(step_dept,     pattern="^dept_")],
-            SUB_TYPE:       [CallbackQueryHandler(step_subtype,  pattern="^(sub_|back_)")],
+            SUB_TYPE:       [
+                CallbackQueryHandler(step_subtype,  pattern="^(sub_|back_)"),
+                CallbackQueryHandler(step_datesub,  pattern="^datesub_"),
+            ],
             PRIORITY:       [CallbackQueryHandler(step_priority, pattern="^pri_")],
             ORDER_NUM:      [MessageHandler(filters.TEXT & ~filters.COMMAND, step_order)],
             PRODUCT:        [MessageHandler(filters.TEXT & ~filters.COMMAND, step_product)],
