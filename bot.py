@@ -478,19 +478,18 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if d.get("photo_is_doc"):
                 group_msg = await context.bot.send_document(
                     chat_id=GROUP_CHAT_ID, document=d["photo_id"],
-                    caption=group_text, parse_mode="Markdown",
+                    caption=group_text,
                     message_thread_id=GROUP_TOPIC_ID,
                 )
             else:
                 group_msg = await context.bot.send_photo(
                     chat_id=GROUP_CHAT_ID, photo=d["photo_id"],
-                    caption=group_text, parse_mode="Markdown",
+                    caption=group_text,
                     message_thread_id=GROUP_TOPIC_ID,
                 )
         else:
             group_msg = await context.bot.send_message(
-                chat_id=GROUP_CHAT_ID, text=group_text,
-                parse_mode="Markdown", message_thread_id=GROUP_TOPIC_ID,
+                chat_id=GROUP_CHAT_ID, text=group_text, message_thread_id=GROUP_TOPIC_ID,
             )
         msg_id = group_msg.message_id
     except Exception as e:
