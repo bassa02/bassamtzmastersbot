@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN      = os.environ["BOT_TOKEN"]
 GROUP_CHAT_ID  = int(os.environ["GROUP_CHAT_ID"])
-GROUP_TOPIC_ID = int(os.environ["GROUP_TOPIC_ID"])
+GROUP_TOPIC_ID   = int(os.environ["GROUP_TOPIC_ID"])
+GROUP_TOPIC_DONE = 12262  # Гілка "Виконані задачі"
 SHEET_ID       = os.environ["SHEET_ID"]
 GOOGLE_CREDS   = os.environ["GOOGLE_CREDS"]
 
@@ -507,10 +508,25 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Зберігаємо в пам'яті
     if "msg_map" not in context.bot_data:
         context.bot_data["msg_map"] = {}
+
+    # Формуємо короткий текст заявки для збереження
+    sub  = d.get("sub_type", "")
+    pri  = d.get("priority", "Звичайний")
+    pri_icon = "🔴" if pri == "Терміново" else "🟢"
+    original_text = (
+        f"{pri_icon} {pri}\n"
+        f"👤 {user_name}\n\n"
+        f"📌 {dept}" + (f" → {sub}" if sub else "") + "\n"
+        f"🔢 Замовлення: #{d['order_num']}\n"
+        f"🪑 Виріб: {d['product']}\n"
+        f"📝 {d['details']}\n"
+    )
+
     context.bot_data["msg_map"][msg_id] = {
         "chat_id": chat_id, "request_id": request_id,
         "product": d["product"], "order_num": d["order_num"],
         "dept": dept, "group_msg_id": msg_id,
+        "original_text": original_text,
     }
 
     # Таймер нагадування логісту
@@ -584,8 +600,43 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request_id = info["request_id"]
     logist     = msg.from_user.full_name
 
+    # Зберігаємо відповідь логіста для подальшого редагування повідомлення
+    msg_map[replied_id]["logist_answer"] = msg.text or ""
+    msg_map[replied_id]["logist_name"]   = logist
+
     # Оновлюємо статус і записуємо час відповіді
     update_sheet_status(request_id, "В роботі", msg.text or "", record_response=True)
+
+    # Зберігаємо відповідь і час для підсумку
+    now = datetime.now()
+    created_str = ""
+    try:
+        sheet = get_sheet()
+        records = sheet.get_all_records()
+        for row in records:
+            if str(row.get("request_id")) == str(request_id):
+                created_str = str(row.get("created_at",""))
+                break
+    except:
+        pass
+
+    response_time_str = "—"
+    if created_str:
+        try:
+            created_dt = datetime.strptime(created_str, "%d.%m.%Y %H:%M")
+            diff = int((now - created_dt).total_seconds() / 60)
+            if diff < 60:
+                response_time_str = f"{diff} хв"
+            else:
+                h = diff // 60
+                m = diff % 60
+                response_time_str = f"{h} год {m} хв"
+        except:
+            pass
+
+    context.bot_data[f"answer_{request_id}"] = msg.text or "—"
+    context.bot_data[f"logist_{request_id}"] = msg.from_user.full_name
+    context.bot_data[f"time_{request_id}"]   = response_time_str
 
     # Скасовуємо нагадування
     jobs = context.job_queue.get_jobs_by_name(f"remind_{request_id}")
@@ -626,18 +677,44 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request_id = parts[1]
     msg_id     = int(parts[2])
 
-    update_sheet_status(request_id, "Виконано")
+    # Беремо інфо про заявку з msg_map
+    msg_map    = context.bot_data.get("msg_map", {})
+    info       = msg_map.get(msg_id, {})
+    logist_answer = context.bot_data.get(f"answer_{request_id}", "—")
+    logist_name   = context.bot_data.get(f"logist_{request_id}", "—")
+    response_time = context.bot_data.get(f"time_{request_id}", "—")
 
-    # Видаляємо з групи
-    try:
-        await context.bot.delete_message(chat_id=GROUP_CHAT_ID, message_id=msg_id)
-    except Exception as e:
-        logger.error(f"Delete error: {e}")
+    update_sheet_status(request_id, "Виконано")
 
     # Скасовуємо автозакриття
     jobs = context.job_queue.get_jobs_by_name(f"autoclose_{request_id}")
     for job in jobs:
         job.schedule_removal()
+
+    # Видаляємо з гілки активних
+    try:
+        await context.bot.delete_message(chat_id=GROUP_CHAT_ID, message_id=msg_id)
+    except Exception as e:
+        logger.error(f"Delete error: {e}")
+
+    # Відправляємо підсумок у гілку "Виконані задачі"
+    done_text = (
+        f"✅ *Виконано | {request_id}*\n"
+        f"👤 Виріб: {info.get('product','—')} (#{info.get('order_num','—')})\n\n"
+        f"💬 Відповідь: {logist_answer}\n"
+        f"👤 Логіст: {logist_name}\n\n"
+        f"⏱ Час відповіді: {response_time}\n"
+        f"✅ Підтверджено бригадиром | {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=GROUP_CHAT_ID,
+            text=done_text,
+            parse_mode="Markdown",
+            message_thread_id=GROUP_TOPIC_DONE,
+        )
+    except Exception as e:
+        logger.error(f"Done topic error: {e}")
 
     await q.edit_message_text(
         f"✅ *Заявку {request_id} закрито!*\n\nДякуємо за підтвердження.",
@@ -720,7 +797,11 @@ async def auto_close(context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if msg_id:
-            await context.bot.delete_message(chat_id=GROUP_CHAT_ID, message_id=msg_id)
+            await context.bot.edit_message_text(
+                chat_id=GROUP_CHAT_ID,
+                message_id=msg_id,
+                text=f"✅ ВИКОНАНО (авто) | Заявка {request_id}\nАвтозакриття через 24г без реакції бригадира.",
+            )
     except:
         pass
 
