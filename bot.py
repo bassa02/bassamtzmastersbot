@@ -1021,6 +1021,65 @@ async def daily_digest(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Digest logist error: {e}")
 
+async def all_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Всі відкриті заявки — тільки для адміна"""
+    uname = update.effective_user.username or ""
+    if uname != ADMIN_USERNAME:
+        await update.message.reply_text("Команда доступна тільки адміністратору.")
+        return
+
+    requests = get_open_requests()
+    if not requests:
+        await update.message.reply_text("Немає відкритих заявок.")
+        return
+
+    # Групуємо по статусу
+    by_status = {}
+    for r in requests:
+        st = r.get("status", "?")
+        by_status.setdefault(st, []).append(r)
+
+    now = now_kyiv()
+    text = f"Відкриті заявки ({len(requests)}) на {now.strftime('%d.%m %H:%M')}:\n\n"
+
+    status_order = ["Нова", "Повернено", "В роботі"]
+    icons = {"Нова": "🆕", "В роботі": "🔄", "Повернено": "↩️"}
+
+    for st in status_order:
+        reqs = by_status.get(st, [])
+        if not reqs:
+            continue
+        text += f"{icons.get(st, '•')} {st} ({len(reqs)}):\n"
+        for r in reqs:
+            rid      = r.get("request_id", "")
+            dept     = r.get("department", "")
+            order    = r.get("order_num", "")
+            product  = r.get("product", "")
+            tag      = r.get("logist_tag", "")
+            deadline = r.get("deadline_response", "")
+            reminded = int(r.get("reminder_count") or 0)
+
+            # Перевіряємо чи прострочено
+            overdue = ""
+            if deadline:
+                try:
+                    dl_dt = datetime.strptime(deadline, "%d.%m.%Y %H:%M")
+                    if now > dl_dt:
+                        overdue = " ⚠️"
+                except:
+                    pass
+
+            remind_label = f" (нагад: {reminded}x)" if reminded > 0 else ""
+            text += f"  {rid} — {dept} #{order} {product}{overdue}{remind_label}\n"
+            text += f"  {tag} | дедлайн: {deadline}\n"
+        text += "\n"
+
+    # Telegram має ліміт 4096 символів
+    if len(text) > 4000:
+        text = text[:4000] + "\n... (скорочено)"
+
+    await update.message.reply_text(text)
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Скасовано. Натисніть /start")
     return ConversationHandler.END
@@ -1071,6 +1130,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_done, pattern="^done_"))
     app.add_handler(CommandHandler("mytasks", my_tasks))
     app.add_handler(CommandHandler("myqueue", my_queue))
+    app.add_handler(CommandHandler("open", all_open))
     app.add_handler(MessageHandler(
         filters.Chat(GROUP_CHAT_ID) & filters.REPLY & filters.TEXT,
         handle_reply
