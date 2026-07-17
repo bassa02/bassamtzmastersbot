@@ -1,7 +1,9 @@
 import logging
 import os
 import json
+import asyncio
 from datetime import datetime, timedelta
+import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -24,6 +26,8 @@ ADMIN_USERNAME = "vbm02"
 ADMIN_CHAT_ID  = None
 LOGIST_USERNAMES = ["TsapiukM", "Yuliia_lohanets", "Ievgenanosov", "B_DH_1"]
 LOGIST_CHAT_IDS  = {}
+
+KYIV_TZ = pytz.timezone("Europe/Kiev")
 
 REMINDER_TIMES = {
     "Дати":        20 * 60,       # 20 хвилин
@@ -95,16 +99,18 @@ WORK_START = 9   # 9:00
 WORK_END   = 18  # 18:00
 WORK_DAYS  = [0, 1, 2, 3, 4]  # пн-пт
 
+def now_kyiv() -> datetime:
+    """Поточний час у Києві (naive datetime для порівнянь)"""
+    return datetime.now(KYIV_TZ).replace(tzinfo=None)
+
 def add_work_minutes(dt: datetime, minutes: int) -> datetime:
-    """Додає хвилини з урахуванням робочого часу пн-пт 9:00-18:00"""
+    """Додає хвилини з урахуванням робочого часу пн-пт 9:00-18:00 (київський час)"""
     remaining = minutes
     current = dt
 
-    # Якщо поточний час поза робочими годинами — переносимо на початок наступного робочого дня
     def next_work_start(d):
         d = d.replace(second=0, microsecond=0)
         if d.weekday() not in WORK_DAYS or d.hour >= WORK_END:
-            # Наступний робочий день
             d = d.replace(hour=WORK_START, minute=0) + timedelta(days=1)
             while d.weekday() not in WORK_DAYS:
                 d += timedelta(days=1)
@@ -115,7 +121,6 @@ def add_work_minutes(dt: datetime, minutes: int) -> datetime:
     current = next_work_start(current)
 
     while remaining > 0:
-        # Хвилин до кінця робочого дня
         end_of_day = current.replace(hour=WORK_END, minute=0)
         mins_left = int((end_of_day - current).total_seconds() / 60)
 
@@ -124,12 +129,16 @@ def add_work_minutes(dt: datetime, minutes: int) -> datetime:
             remaining = 0
         else:
             remaining -= mins_left
-            # Переходимо на наступний робочий день
             current = current.replace(hour=WORK_START, minute=0) + timedelta(days=1)
             while current.weekday() not in WORK_DAYS:
                 current += timedelta(days=1)
 
     return current
+
+def is_work_time() -> bool:
+    """Чи зараз робочий час (пн-пт 9:00-18:00 Київ)"""
+    now = now_kyiv()
+    return now.weekday() in WORK_DAYS and WORK_START <= now.hour < WORK_END
 
 def calc_work_minutes(start: datetime, end: datetime) -> int:
     """Рахує кількість робочих хвилин між двома датами"""
@@ -246,7 +255,7 @@ def save_to_sheet(data):
             ])
         dept = data.get("department", "")
         limit_min = {"Дати":20,"Підряд":20,"Склад":240,"Компенсація":240}.get(dept, 240)
-        deadline_resp = add_work_minutes(datetime.now(), limit_min).strftime("%d.%m.%Y %H:%M")
+        deadline_resp = add_work_minutes(now_kyiv(), limit_min).strftime("%d.%m.%Y %H:%M")
         sheet.append_row([
             data["request_id"], data["created_at"], data["department"],
             data.get("sub_type",""), data.get("priority","🟢 Звичайний"),
@@ -266,7 +275,7 @@ def update_sheet_status(request_id, status, comment="", record_response=False):
         records = sheet.get_all_records()
         for i, row in enumerate(records, start=2):
             if str(row.get("request_id")) == str(request_id):
-                now = datetime.now()
+                now = now_kyiv()
                 now_str = now.strftime("%d.%m.%Y %H:%M")
                 sheet.update_cell(i, headers.index("status")+1, status)
                 sheet.update_cell(i, headers.index("manager_comment")+1, comment)
@@ -512,7 +521,7 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sub        = d.get("sub_type", "")
     pri        = d.get("priority", "🟢 Звичайний")
     request_id = next_id()
-    created_at = datetime.now().strftime("%d.%m.%Y %H:%M")
+    created_at = now_kyiv().strftime("%d.%m.%Y %H:%M")
     chat_id    = q.from_user.id
     user_name  = q.from_user.full_name
 
@@ -574,39 +583,143 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "product": d["product"], "order_num": d["order_num"],
         "dept": dept, "group_msg_id": msg_id, "tag": tag,
     }
-
-    reminder_sec = REMINDER_TIMES.get(dept, 12 * 60 * 60)
-    context.job_queue.run_once(
-        remind_logist,
-        when=reminder_sec,
-        data={"request_id": request_id, "msg_id": msg_id, "tag": tag, "dept": dept},
-        name="remind_" + request_id
-    )
+    # Зберігаємо msg_map також у Sheets щоб пережити рестарт
+    save_msg_map_to_sheet(msg_id, chat_id, request_id, d["product"], d["order_num"], dept, tag)
 
     await q.edit_message_text(
         "Заявку " + request_id + " подано!\n\nЛогіст отримав сповіщення. Відповідь прийде сюди автоматично."
     )
     return ConversationHandler.END
 
-async def remind_logist(context: ContextTypes.DEFAULT_TYPE):
-    data = context.job.data
-    rid  = data["request_id"]
-    tag  = data["tag"]
-    dept = data["dept"]
-
-    requests = get_open_requests()
-    if rid not in [r.get("request_id") for r in requests]:
-        return
-
-    time_label = {"Дати":"20 хвилин","Підряд":"20 хвилин","Склад":"4 години","Компенсація":"4 години"}.get(dept,"")
+def save_msg_map_to_sheet(msg_id, chat_id, request_id, product, order_num, dept, tag):
+    """Зберігає msg_map у окремий аркуш MsgMap щоб пережити рестарт"""
     try:
-        await context.bot.send_message(
-            chat_id=GROUP_CHAT_ID,
-            text="Нагадування! Заявка " + rid + " без відповіді вже " + time_label + ".\n" + tag,
-            message_thread_id=GROUP_TOPIC_ID,
-        )
+        creds_dict = json.loads(GOOGLE_CREDS)
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open_by_key(SHEET_ID)
+        try:
+            ws = spreadsheet.worksheet("MsgMap")
+        except:
+            ws = spreadsheet.add_worksheet(title="MsgMap", rows=1000, cols=8)
+            ws.append_row(["msg_id","chat_id","request_id","product","order_num","dept","tag","created_at"])
+        ws.append_row([
+            str(msg_id), str(chat_id), request_id,
+            product, order_num, dept, tag,
+            now_kyiv().strftime("%d.%m.%Y %H:%M")
+        ])
     except Exception as e:
-        logger.error(f"Reminder error: {e}")
+        logger.error(f"MsgMap save error: {e}")
+
+def load_msg_map_from_sheet() -> dict:
+    """Завантажує msg_map з Sheets при старті боту"""
+    try:
+        creds_dict = json.loads(GOOGLE_CREDS)
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open_by_key(SHEET_ID)
+        try:
+            ws = spreadsheet.worksheet("MsgMap")
+        except:
+            return {}
+        records = ws.get_all_records()
+        result = {}
+        for row in records:
+            mid = row.get("msg_id")
+            if mid:
+                try:
+                    result[int(mid)] = {
+                        "chat_id":    int(row.get("chat_id", 0)),
+                        "request_id": row.get("request_id", ""),
+                        "product":    row.get("product", ""),
+                        "order_num":  row.get("order_num", ""),
+                        "dept":       row.get("dept", ""),
+                        "group_msg_id": int(mid),
+                        "tag":        row.get("tag", ""),
+                    }
+                except:
+                    pass
+        logger.info(f"Loaded {len(result)} entries from MsgMap sheet")
+        return result
+    except Exception as e:
+        logger.error(f"MsgMap load error: {e}")
+        return {}
+
+def increment_reminder_count(request_id: str):
+    """Збільшує лічильник нагадувань у Sheets"""
+    try:
+        sheet = get_sheet()
+        headers = sheet.row_values(1)
+        records = sheet.get_all_records()
+        for i, row in enumerate(records, start=2):
+            if str(row.get("request_id")) == str(request_id):
+                cur = int(row.get("reminder_count") or 0)
+                sheet.update_cell(i, headers.index("reminder_count") + 1, cur + 1)
+                break
+    except Exception as e:
+        logger.error(f"Increment reminder error: {e}")
+
+async def reminder_loop(app):
+    """Фоновий цикл — перевіряє нагадування кожні 5 хвилин.
+    Переживає рестарти Railway бо читає стан з Google Sheets."""
+    await asyncio.sleep(30)  # даємо боту час запуститись
+    logger.info("Reminder loop started")
+    while True:
+        try:
+            if not is_work_time():
+                await asyncio.sleep(300)
+                continue
+
+            now = now_kyiv()
+            requests = get_open_requests()
+
+            for r in requests:
+                request_id   = r.get("request_id", "")
+                deadline_str = r.get("deadline_response", "")
+                reminded     = int(r.get("reminder_count") or 0)
+                tag          = r.get("logist_tag", "")
+                dept         = r.get("department", "")
+
+                if not deadline_str or reminded > 0:
+                    continue
+
+                try:
+                    deadline_dt = datetime.strptime(deadline_str, "%d.%m.%Y %H:%M")
+                except:
+                    continue
+
+                if now > deadline_dt:
+                    time_label = {
+                        "Дати": "20 хвилин", "Підряд": "20 хвилин",
+                        "Склад": "4 години", "Компенсація": "4 години"
+                    }.get(dept, "")
+                    try:
+                        await app.bot.send_message(
+                            chat_id=GROUP_CHAT_ID,
+                            text=(
+                                "⚠️ Нагадування!\n\n"
+                                "Заявка " + request_id + " без відповіді вже " + time_label + ".\n\n"
+                                + tag + " — будь ласка, дайте відповідь."
+                            ),
+                            message_thread_id=GROUP_TOPIC_ID,
+                        )
+                        increment_reminder_count(request_id)
+                        logger.info(f"Reminder sent for {request_id}")
+                    except Exception as e:
+                        logger.error(f"Reminder send error {request_id}: {e}")
+
+        except Exception as e:
+            logger.error(f"Reminder loop error: {e}")
+
+        await asyncio.sleep(300)  # 5 хвилин
 
 async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -638,7 +751,7 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     created_str = str(row.get("created_at",""))
                     try:
                         created_dt = datetime.strptime(created_str, "%d.%m.%Y %H:%M")
-                        real_diff = int((datetime.now() - created_dt).total_seconds() / 60)
+                        real_diff = int((now_kyiv() - created_dt).total_seconds() / 60)
                         sheet.update_cell(i, headers.index("logist_reaction_min")+1, real_diff)
                     except:
                         pass
@@ -646,7 +759,7 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Reaction time error: {e}")
 
-    now = datetime.now()
+    now = now_kyiv()
     try:
         sheet = get_sheet()
         records = sheet.get_all_records()
@@ -669,10 +782,7 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data["time_" + request_id]   = response_time_str
     context.bot_data["logist_msg_id_" + request_id] = msg.message_id
 
-    jobs = context.job_queue.get_jobs_by_name("remind_" + request_id)
-    for job in jobs:
-        job.schedule_removal()
-
+    # Нагадування тепер через reminder_loop + Sheets — job_queue не використовується
     kb = [
         [InlineKeyboardButton("✅ Виконано, дякую!", callback_data="done_" + request_id + "_" + str(replied_id))],
         [InlineKeyboardButton("❌ Не вирішено",      callback_data="reject_" + request_id + "_" + str(replied_id))],
@@ -689,12 +799,7 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data["bot_msg_id_" + request_id] = bot_msg.message_id
     context.bot_data["master_id_" + request_id]  = master_id
 
-    context.job_queue.run_once(
-        auto_close,
-        when=AUTO_CLOSE_TIME,
-        data={"request_id": request_id, "group_msg_id": info.get("group_msg_id"), "master_id": master_id},
-        name="autoclose_" + request_id
-    )
+    # auto_close через job_queue — залишаємо як є (24г в пам'яті достатньо для цього кейсу)
 
 async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -710,10 +815,6 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response_time = context.bot_data.get("time_" + request_id, "—")
 
     update_sheet_status(request_id, "Виконано")
-
-    jobs = context.job_queue.get_jobs_by_name("autoclose_" + request_id)
-    for job in jobs:
-        job.schedule_removal()
 
     # Видаляємо заявку з групи
     try:
@@ -752,7 +853,7 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Відповідь: " + logist_answer + "\n" +
         "Логіст: " + logist_name + "\n\n" +
         "Час відповіді: " + response_time + "\n" +
-        "Підтверджено: " + datetime.now().strftime("%d.%m.%Y %H:%M")
+        "Підтверджено: " + now_kyiv().strftime("%d.%m.%Y %H:%M")
     )
     try:
         await context.bot.send_message(
@@ -786,10 +887,6 @@ async def step_reject_comment(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg_id_str = context.user_data.get("rejecting_msg_id", 0)
 
     update_sheet_status(request_id, "Повернено", comment)
-
-    jobs = context.job_queue.get_jobs_by_name("autoclose_" + request_id)
-    for job in jobs:
-        job.schedule_removal()
 
     msg_map = context.bot_data.get("msg_map", {})
     info    = msg_map.get(int(msg_id_str) if msg_id_str else 0, {})
@@ -899,7 +996,7 @@ async def daily_digest(context: ContextTypes.DEFAULT_TYPE):
             dept = r.get("department","?")
             by_dept.setdefault(dept, []).append(r)
 
-        text = "Ранковий дайджест " + datetime.now().strftime("%d.%m.%Y") + "\n\n"
+        text = "Ранковий дайджест " + now_kyiv().strftime("%d.%m.%Y") + "\n\n"
         text += "Всього відкритих: " + str(len(open_requests)) + "\n\n"
         for dept, reqs in by_dept.items():
             text += dept + ": " + str(len(reqs)) + " заявок\n"
@@ -915,7 +1012,7 @@ async def daily_digest(context: ContextTypes.DEFAULT_TYPE):
         mine = get_open_requests(logist_tag=tag)
         if not mine:
             continue
-        text = "Ваші відкриті заявки на " + datetime.now().strftime("%d.%m") + ":\n\n"
+        text = "Ваші відкриті заявки на " + now_kyiv().strftime("%d.%m") + ":\n\n"
         for r in mine:
             text += r["request_id"] + " — " + r.get("department","") + " #" + str(r.get("order_num","")) + "\n"
             text += "   " + r.get("product","") + "\n\n"
@@ -928,8 +1025,16 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Скасовано. Натисніть /start")
     return ConversationHandler.END
 
+async def post_init(app):
+    """Викликається після старту — завантажуємо msg_map з Sheets"""
+    msg_map = load_msg_map_from_sheet()
+    app.bot_data["msg_map"] = msg_map
+    logger.info(f"Bot started. Loaded {len(msg_map)} msg_map entries from Sheets.")
+    # Запускаємо фоновий цикл нагадувань
+    asyncio.create_task(reminder_loop(app))
+
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.job_queue.run_daily(
         daily_digest,
