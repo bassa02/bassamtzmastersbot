@@ -251,7 +251,8 @@ def save_to_sheet(data):
                 "status","manager_comment","updated_at",
                 "chat_id_master","message_id_group","logist_tag",
                 "deadline_response","responded_at","response_time_min","is_overdue",
-                "reminder_count","logist_reaction_min"
+                "reminder_count","logist_reaction_min",
+                "master_name","master_username"
             ])
         dept = data.get("department", "")
         limit_min = {"Дати":20,"Підряд":20,"Склад":240,"Компенсація":240}.get(dept, 240)
@@ -263,23 +264,32 @@ def save_to_sheet(data):
             data["details"], data.get("deadline",""),
             "Нова", "", "",
             str(data["chat_id"]), str(data.get("message_id_group","")),
-            data.get("tag",""), deadline_resp, "", "", "", 0, ""
+            data.get("tag",""), deadline_resp, "", "", "", 0, "",
+            data.get("master_name",""), data.get("master_username",""),
         ])
     except Exception as e:
         logger.error(f"Sheet error: {e}")
 
-def update_sheet_status(request_id, status, comment="", record_response=False):
+def update_sheet_status(request_id, status, comment="", record_response=False,
+                        logist_name="", logist_username=""):
     try:
         sheet = get_sheet()
         headers = sheet.row_values(1)
         records = sheet.get_all_records()
+        found = False
         for i, row in enumerate(records, start=2):
-            if str(row.get("request_id")) == str(request_id):
+            if str(row.get("request_id", "")).strip() == str(request_id).strip():
+                found = True
                 now = now_kyiv()
                 now_str = now.strftime("%d.%m.%Y %H:%M")
                 sheet.update_cell(i, headers.index("status")+1, status)
                 sheet.update_cell(i, headers.index("manager_comment")+1, comment)
                 sheet.update_cell(i, headers.index("updated_at")+1, now_str)
+                # Зберігаємо хто відповів
+                if logist_name and "logist_name" in headers:
+                    sheet.update_cell(i, headers.index("logist_name")+1, logist_name)
+                if logist_username and "logist_username" in headers:
+                    sheet.update_cell(i, headers.index("logist_username")+1, logist_username)
                 if record_response and "responded_at" in headers:
                     sheet.update_cell(i, headers.index("responded_at")+1, now_str)
                     try:
@@ -293,7 +303,10 @@ def update_sheet_status(request_id, status, comment="", record_response=False):
                         sheet.update_cell(i, headers.index("is_overdue")+1, "Так" if now > deadline_dt else "Ні")
                     except:
                         pass
+                logger.info(f"Sheet updated: {request_id} → {status}")
                 break
+        if not found:
+            logger.error(f"update_sheet_status: рядок {request_id} НЕ ЗНАЙДЕНО в таблиці!")
     except Exception as e:
         logger.error(f"Sheet update error: {e}")
 
@@ -302,8 +315,10 @@ def get_open_requests(logist_tag=None):
         sheet = get_sheet()
         records = sheet.get_all_records()
         result = []
+        open_statuses = {"нова", "в роботі", "повернено"}
         for row in records:
-            if row.get("status") in ("Нова", "В роботі", "Повернено"):
+            status = str(row.get("status", "")).strip().lower()
+            if status in open_statuses:
                 if logist_tag is None or logist_tag in str(row.get("logist_tag","")):
                     result.append(row)
         return result
@@ -519,11 +534,12 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d          = context.user_data
     dept       = d["department"]
     sub        = d.get("sub_type", "")
-    pri        = d.get("priority", "🟢 Звичайний")
-    request_id = next_id()
-    created_at = now_kyiv().strftime("%d.%m.%Y %H:%M")
-    chat_id    = q.from_user.id
-    user_name  = q.from_user.full_name
+    pri          = d.get("priority", "🟢 Звичайний")
+    request_id   = next_id()
+    created_at   = now_kyiv().strftime("%d.%m.%Y %H:%M")
+    chat_id      = q.from_user.id
+    user_name    = q.from_user.full_name
+    user_uname   = q.from_user.username or ""
 
     if dept == "Компенсація":
         tag = COMP_TAG
@@ -574,6 +590,7 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "order_num": d["order_num"], "product": d["product"],
         "details": d["details"], "deadline": d.get("deadline",""),
         "chat_id": chat_id, "message_id_group": msg_id, "tag": tag,
+        "master_name": user_name, "master_username": user_uname,
     })
 
     if "msg_map" not in context.bot_data:
@@ -737,8 +754,10 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     master_id  = info["chat_id"]
     request_id = info["request_id"]
     logist     = msg.from_user.full_name
+    logist_uname = msg.from_user.username or ""
 
-    update_sheet_status(request_id, "В роботі", msg.text or "", record_response=True)
+    update_sheet_status(request_id, "В роботі", msg.text or "", record_response=True,
+                        logist_name=logist, logist_username=logist_uname)
 
     # Записуємо час реакції логіста (реальний час від подачі до відповіді)
     try:
@@ -1021,6 +1040,171 @@ async def daily_digest(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Digest logist error: {e}")
 
+async def cleanup_old(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закриває всі заявки подані до 13.07.2026"""
+    uname = update.effective_user.username or ""
+    if uname != ADMIN_USERNAME:
+        return
+
+    await update.message.reply_text("⏳ Обробляю...")
+
+    try:
+        sheet = get_sheet()
+        headers = sheet.row_values(1)
+        records = sheet.get_all_records()
+        cutoff = datetime(2026, 7, 13, 23, 59)
+        now_str = now_kyiv().strftime("%d.%m.%Y %H:%M")
+
+        closed = 0
+        skipped = 0
+        already_done = 0
+
+        for i, row in enumerate(records, start=2):
+            created_str = str(row.get("created_at", "")).strip()
+            status = str(row.get("status", "")).strip().lower()
+
+            # Вже закрита — пропускаємо
+            if status in ("виконано", "виконано (авто)"):
+                already_done += 1
+                continue
+
+            try:
+                created_dt = datetime.strptime(created_str, "%d.%m.%Y %H:%M")
+            except:
+                skipped += 1
+                continue
+
+            if created_dt <= cutoff:
+                sheet.update_cell(i, headers.index("status")+1, "Виконано (авто)")
+                sheet.update_cell(i, headers.index("manager_comment")+1, "Закрито адміном — архівне очищення")
+                sheet.update_cell(i, headers.index("updated_at")+1, now_str)
+                closed += 1
+            else:
+                skipped += 1
+
+        result = (
+            f"✅ Готово!\n\n"
+            f"Закрито (до 13.07): {closed}\n"
+            f"Залишено актуальними (після 13.07): {skipped}\n"
+            f"Вже були закриті: {already_done}"
+        )
+        await update.message.reply_text(result)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка: {e}")
+        logger.error(f"Cleanup error: {e}")
+    """Синхронізація — закриває старі 'Нові' заявки, дублює актуальні в групу"""
+    uname = update.effective_user.username or ""
+    if uname != ADMIN_USERNAME:
+        return
+
+    await update.message.reply_text("⏳ Синхронізую...")
+
+    try:
+        sheet = get_sheet()
+        records = sheet.get_all_records()
+        headers = sheet.row_values(1)
+        now = now_kyiv()
+        two_weeks_ago = now - timedelta(days=14)
+
+        auto_closed = 0
+        duplicated  = 0
+        errors      = []
+
+        for i, row in enumerate(records, start=2):
+            status = str(row.get("status", "")).strip().lower()
+            if status != "нова":
+                continue
+
+            request_id = str(row.get("request_id", "")).strip()
+            created_str = str(row.get("created_at", "")).strip()
+
+            # Парсимо дату
+            try:
+                created_dt = datetime.strptime(created_str, "%d.%m.%Y %H:%M")
+            except:
+                errors.append(f"{request_id} — не вдалось розпарсити дату: {created_str}")
+                continue
+
+            if created_dt < two_weeks_ago:
+                # Старіше 2 тижнів — закриваємо автоматично
+                try:
+                    sheet.update_cell(i, headers.index("status")+1, "Виконано (авто)")
+                    sheet.update_cell(i, headers.index("manager_comment")+1, "Автозакриття — заявка старіша 2 тижнів")
+                    sheet.update_cell(i, headers.index("updated_at")+1, now.strftime("%d.%m.%Y %H:%M"))
+                    auto_closed += 1
+                    logger.info(f"Sync auto-closed: {request_id}")
+                except Exception as e:
+                    errors.append(f"{request_id} — помилка закриття: {e}")
+            else:
+                # Актуальна — дублюємо в групу МТЗ
+                dept    = row.get("department", "")
+                order   = row.get("order_num", "")
+                product = row.get("product", "")
+                details = row.get("details", "")
+                tag     = row.get("logist_tag", "")
+                deadline = row.get("deadline_response", "")
+
+                text = (
+                    f"🔄 Повторне нагадування!\n\n"
+                    f"Заявка {request_id} досі відкрита\n"
+                    f"Тип: {dept}\n"
+                    f"Замовлення: #{order} {product}\n"
+                    f"Деталі: {details}\n"
+                    f"Дедлайн: {deadline}\n"
+                    f"{tag}"
+                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=GROUP_CHAT_ID,
+                        text=text,
+                        message_thread_id=GROUP_TOPIC_ID,
+                    )
+                    duplicated += 1
+                except Exception as e:
+                    errors.append(f"{request_id} — помилка відправки: {e}")
+
+        # Підсумок
+        result = f"✅ Синхронізація завершена:\n\n"
+        result += f"Автозакрито (старіше 2 тижнів): {auto_closed}\n"
+        result += f"Продубльовано в групу МТЗ: {duplicated}\n"
+        if errors:
+            result += f"\n⚠️ Помилки ({len(errors)}):\n"
+            for e in errors[:5]:  # показуємо перші 5
+                result += f"  • {e}\n"
+
+        await update.message.reply_text(result)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка синхронізації: {e}")
+        logger.error(f"Sync error: {e}")
+    """Діагностика — показує сирі статуси з таблиці"""
+    uname = update.effective_user.username or ""
+    if uname != ADMIN_USERNAME:
+        return
+    try:
+        sheet = get_sheet()
+        records = sheet.get_all_records()
+        text = f"Всього рядків: {len(records)}\n\n"
+
+        # Показуємо всі унікальні статуси які є в таблиці
+        all_statuses = set(repr(r.get("status", "")) for r in records)
+        text += f"Всі статуси в таблиці:\n"
+        for s in sorted(all_statuses):
+            count = sum(1 for r in records if repr(r.get("status","")) == s)
+            text += f"  {s} — {count} шт\n"
+
+        text += "\nОстанні 10 рядків:\n"
+        for r in records[-10:]:
+            rid    = r.get("request_id", "?")
+            status = repr(r.get("status", ""))
+            dept   = r.get("department", "")
+            text += f"{rid} | {status} | {dept}\n"
+
+        await update.message.reply_text(text)
+    except Exception as e:
+        await update.message.reply_text(f"Помилка: {e}")
+
 async def all_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Всі відкриті заявки — тільки для адміна"""
     uname = update.effective_user.username or ""
@@ -1131,6 +1315,9 @@ def main():
     app.add_handler(CommandHandler("mytasks", my_tasks))
     app.add_handler(CommandHandler("myqueue", my_queue))
     app.add_handler(CommandHandler("open", all_open))
+    app.add_handler(CommandHandler("sync", sync_requests))
+    app.add_handler(CommandHandler("cleanup", cleanup_old))
+    app.add_handler(CommandHandler("debug", debug_sheet))
     app.add_handler(MessageHandler(
         filters.Chat(GROUP_CHAT_ID) & filters.REPLY & filters.TEXT,
         handle_reply
