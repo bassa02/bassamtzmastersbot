@@ -608,9 +608,19 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "✍️ Відповісти самому",
                         callback_data=f"admin_reply_{request_id}_{chat_id}"
                     )]]
+                    admin_text = (
+                        f"📦 Нова заявка {request_id} — Склад\n"
+                        f"👤 Від: {user_name}" + (f" (@{user_uname})" if user_uname else "") + "\n\n"
+                        f"🔢 Замовлення: #{d['order_num']}\n"
+                        f"🪑 Виріб: {d['product']}\n"
+                        f"📝 Деталі: {d['details']}\n"
+                    )
+                    if d.get("deadline"):
+                        admin_text += f"📅 Дедлайн: {d['deadline']}\n"
+                    admin_text += f"\n➡️ Передана @{MILA_USERNAME}"
                     await context.bot.send_message(
                         chat_id=ADMIN_CHAT_ID,
-                        text=f"📋 Заявка {request_id} на списання від {user_name} передана @{MILA_USERNAME}",
+                        text=admin_text,
                         reply_markup=InlineKeyboardMarkup(admin_kb),
                     )
                 logger.info(f"Склад request {request_id} sent to Mila")
@@ -674,7 +684,14 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )]]
                 await context.bot.send_message(
                     chat_id=ADMIN_CHAT_ID,
-                    text=f"📋 Нова заявка {request_id} | {dept} від {user_name}",
+                    text=(
+                        f"📋 Нова заявка {request_id} — {dept}\n"
+                        f"👤 Від: {user_name}" + (f" (@{user_uname})" if user_uname else "") + "\n\n"
+                        f"🔢 Замовлення: #{d['order_num']}\n"
+                        f"🪑 Виріб: {d['product']}\n"
+                        f"📝 Деталі: {d['details']}"
+                        + (f"\n📅 Дедлайн: {d['deadline']}" if d.get("deadline") else "")
+                    ),
                     reply_markup=InlineKeyboardMarkup(admin_kb),
                 )
         except Exception as e:
@@ -1636,6 +1653,142 @@ async def admin_reply_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Останні 10 заявок менеджера"""
+    chat_id = update.effective_user.id
+    try:
+        sheet = get_sheet()
+        records = sheet.get_all_records()
+        # Фільтруємо заявки цього менеджера
+        my_requests = [
+            r for r in records
+            if str(r.get("chat_id_master", "")).strip() == str(chat_id)
+        ]
+        if not my_requests:
+            await update.message.reply_text("У вас ще немає заявок.")
+            return
+
+        # Сортуємо по даті — найновіші першими
+        def parse_date(r):
+            try:
+                return datetime.strptime(str(r.get("created_at", "")), "%d.%m.%Y %H:%M")
+            except:
+                return datetime.min
+        my_requests.sort(key=parse_date, reverse=True)
+
+        text = f"📋 Ваші останні заявки ({min(10, len(my_requests))} з {len(my_requests)}):\n\n"
+        for r in my_requests[:10]:
+            rid     = r.get("request_id", "")
+            dept    = r.get("department", "")
+            order   = r.get("order_num", "")
+            product = r.get("product", "")
+            status  = r.get("status", "")
+            created = r.get("created_at", "")
+            answer  = r.get("manager_comment", "")
+
+            status_icon = {
+                "виконано": "✅",
+                "виконано (авто)": "✅",
+                "в роботі": "🔄",
+                "нова": "🆕",
+                "повернено": "↩️",
+            }.get(status.lower(), "•")
+
+            text += f"{status_icon} {rid} — {dept}\n"
+            text += f"   #{order} {product}\n"
+            text += f"   {created}\n"
+            if answer:
+                text += f"   💬 {answer[:80]}{'...' if len(answer) > 80 else ''}\n"
+            text += "\n"
+
+        text += "Для деталей: /request REQ-XXXX"
+
+        if len(text) > 4000:
+            text = text[:4000] + "\n..."
+        await update.message.reply_text(text)
+
+    except Exception as e:
+        await update.message.reply_text(f"Помилка: {e}")
+        logger.error(f"History error: {e}")
+
+
+async def request_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Деталі конкретної заявки — /request REQ-0201"""
+    chat_id = update.effective_user.id
+    uname   = update.effective_user.username or ""
+
+    if not context.args:
+        await update.message.reply_text(
+            "Вкажіть номер заявки.\nПриклад: /request REQ-0201"
+        )
+        return
+
+    request_id = context.args[0].upper()
+
+    try:
+        sheet = get_sheet()
+        records = sheet.get_all_records()
+        row = None
+        for r in records:
+            if str(r.get("request_id", "")).strip().upper() == request_id:
+                row = r
+                break
+
+        if not row:
+            await update.message.reply_text(f"Заявку {request_id} не знайдено.")
+            return
+
+        # Перевіряємо доступ — тільки автор або адмін
+        is_owner = str(row.get("chat_id_master", "")).strip() == str(chat_id)
+        is_admin = uname == ADMIN_USERNAME
+        if not is_owner and not is_admin:
+            await update.message.reply_text("Це не ваша заявка.")
+            return
+
+        status = row.get("status", "")
+        status_icon = {
+            "виконано": "✅",
+            "виконано (авто)": "✅",
+            "в роботі": "🔄",
+            "нова": "🆕",
+            "повернено": "↩️",
+        }.get(status.lower(), "•")
+
+        text = (
+            f"{status_icon} Заявка {request_id}\n"
+            f"Статус: {status}\n\n"
+            f"📁 Тип: {row.get('department', '')} {('→ ' + row.get('sub_type','')) if row.get('sub_type') else ''}\n"
+            f"🔢 Замовлення: #{row.get('order_num', '')}\n"
+            f"🪑 Виріб: {row.get('product', '')}\n"
+            f"📝 Деталі: {row.get('details', '')}\n"
+        )
+        if row.get("deadline"):
+            text += f"📅 Дедлайн: {row.get('deadline')}\n"
+
+        text += f"\n🕐 Подано: {row.get('created_at', '')}\n"
+
+        if row.get("logist_name") or row.get("logist_tag"):
+            executor = row.get("logist_name") or row.get("logist_tag", "")
+            text += f"👤 Виконавець: {executor}\n"
+
+        if row.get("responded_at"):
+            text += f"✅ Виконано: {row.get('responded_at')}\n"
+
+        if row.get("response_time_min"):
+            mins = int(row.get("response_time_min", 0))
+            h, m = divmod(mins, 60)
+            text += f"⏱ Час відповіді: {h}г {m}хв\n"
+
+        if row.get("manager_comment"):
+            text += f"\n💬 Відповідь:\n{row.get('manager_comment')}\n"
+
+        await update.message.reply_text(text)
+
+    except Exception as e:
+        await update.message.reply_text(f"Помилка: {e}")
+        logger.error(f"Request detail error: {e}")
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Скасовано. Натисніть /start")
     return ConversationHandler.END
@@ -1703,6 +1856,8 @@ def main():
     app.add_handler(CommandHandler("sync", sync_requests))
     app.add_handler(CommandHandler("cleanup", cleanup_old))
     app.add_handler(CommandHandler("debug", debug_sheet))
+    app.add_handler(CommandHandler("history", history))
+    app.add_handler(CommandHandler("request", request_detail))
     # Відповіді з групи МТЗ
     app.add_handler(MessageHandler(
         filters.Chat(GROUP_CHAT_ID) & filters.REPLY & filters.TEXT,
