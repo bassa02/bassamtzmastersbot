@@ -1205,6 +1205,110 @@ async def cleanup_old(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Помилка: {e}")
 
+async def sync_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Синхронізація — закриває старі 'Нові' заявки, дублює актуальні в групу"""
+    uname = update.effective_user.username or ""
+    if uname != ADMIN_USERNAME:
+        return
+
+    await update.message.reply_text("⏳ Синхронізую...")
+
+    try:
+        sheet = get_sheet()
+        records = sheet.get_all_records()
+        headers = sheet.row_values(1)
+        now = now_kyiv()
+        two_weeks_ago = now - timedelta(days=14)
+
+        auto_closed = 0
+        duplicated  = 0
+        errors      = []
+
+        for i, row in enumerate(records, start=2):
+            status = str(row.get("status", "")).strip().lower()
+            if status != "нова":
+                continue
+
+            request_id  = str(row.get("request_id", "")).strip()
+            created_str = str(row.get("created_at", "")).strip()
+
+            try:
+                created_dt = datetime.strptime(created_str, "%d.%m.%Y %H:%M")
+            except:
+                errors.append(f"{request_id} — не вдалось розпарсити дату")
+                continue
+
+            if created_dt < two_weeks_ago:
+                try:
+                    sheet.update_cell(i, headers.index("status")+1, "Виконано (авто)")
+                    sheet.update_cell(i, headers.index("manager_comment")+1, "Автозакриття — заявка старіша 2 тижнів")
+                    sheet.update_cell(i, headers.index("updated_at")+1, now.strftime("%d.%m.%Y %H:%M"))
+                    auto_closed += 1
+                except Exception as e:
+                    errors.append(f"{request_id} — помилка закриття: {e}")
+            else:
+                dept    = row.get("department", "")
+                order   = row.get("order_num", "")
+                product = row.get("product", "")
+                details = row.get("details", "")
+                tag     = row.get("logist_tag", "")
+                deadline = row.get("deadline_response", "")
+                text = (
+                    f"🔄 Повторне нагадування!\n\n"
+                    f"Заявка {request_id} досі відкрита\n"
+                    f"Тип: {dept}\n"
+                    f"Замовлення: #{order} {product}\n"
+                    f"Деталі: {details}\n"
+                    f"Дедлайн: {deadline}\n"
+                    f"{tag}"
+                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=GROUP_CHAT_ID,
+                        text=text,
+                        message_thread_id=GROUP_TOPIC_ID,
+                    )
+                    duplicated += 1
+                except Exception as e:
+                    errors.append(f"{request_id} — помилка відправки: {e}")
+
+        result = f"✅ Синхронізація завершена:\n\nАвтозакрито (старіше 2 тижнів): {auto_closed}\nПродубльовано в групу МТЗ: {duplicated}\n"
+        if errors:
+            result += f"\n⚠️ Помилки ({len(errors)}):\n"
+            for e in errors[:5]:
+                result += f"  • {e}\n"
+        await update.message.reply_text(result)
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка: {e}")
+        logger.error(f"Sync error: {e}")
+
+
+async def debug_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Діагностика — показує сирі статуси з таблиці"""
+    uname = update.effective_user.username or ""
+    if uname != ADMIN_USERNAME:
+        return
+    try:
+        sheet = get_sheet()
+        records = sheet.get_all_records()
+        text = f"Всього рядків: {len(records)}\n\n"
+        all_statuses = set(repr(r.get("status", "")) for r in records)
+        text += "Всі статуси в таблиці:\n"
+        for s in sorted(all_statuses):
+            count = sum(1 for r in records if repr(r.get("status","")) == s)
+            text += f"  {s} — {count} шт\n"
+        text += "\nОстанні 10 рядків:\n"
+        for r in records[-10:]:
+            rid    = r.get("request_id", "?")
+            status = repr(r.get("status", ""))
+            dept   = r.get("department", "")
+            text += f"{rid} | {status} | {dept}\n"
+        await update.message.reply_text(text)
+    except Exception as e:
+        await update.message.reply_text(f"Помилка: {e}")
+
+
 async def all_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Всі відкриті заявки — тільки для адміна"""
     uname = update.effective_user.username or ""
