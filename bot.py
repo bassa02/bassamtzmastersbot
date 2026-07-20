@@ -24,8 +24,11 @@ GOOGLE_CREDS     = os.environ["GOOGLE_CREDS"]
 
 ADMIN_USERNAME = "vbm02"
 ADMIN_CHAT_ID  = None
-LOGIST_USERNAMES = ["TsapiukM", "Yuliia_lohanets", "Ievgenanosov", "B_DH_1"]
+LOGIST_USERNAMES = ["TsapiukM", "Yuliia_lohanets", "Ievgenanosov", "B_DH_1", "latomka"]
 LOGIST_CHAT_IDS  = {}
+
+MILA_USERNAME = "latomka"
+MILA_CHAT_ID  = None
 
 KYIV_TZ = pytz.timezone("Europe/Kiev")
 
@@ -39,7 +42,7 @@ AUTO_CLOSE_TIME = 24 * 60 * 60
 
 (DEPT, SUB_TYPE, PRIORITY,
  ORDER_NUM, PRODUCT, DETAILS, DEADLINE, PHOTO,
- CONFIRM, REJECT_COMMENT) = range(10)
+ CONFIRM, REJECT_COMMENT, ADMIN_REPLY) = range(11)
 
 STRUCTURE = {
     "Склад": {
@@ -347,6 +350,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uname == ADMIN_USERNAME:
         global ADMIN_CHAT_ID
         ADMIN_CHAT_ID = user.id
+        save_special_chat_id("ADMIN", user.id)
+    if uname == MILA_USERNAME:
+        global MILA_CHAT_ID
+        MILA_CHAT_ID = user.id
+        save_special_chat_id("MILA", user.id)
+        logger.info(f"Mila chat_id saved: {user.id}")
     if uname in LOGIST_USERNAMES:
         LOGIST_CHAT_IDS[uname] = user.id
 
@@ -560,29 +569,117 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         group_text += "📅 Дедлайн: " + d["deadline"] + "\n"
     group_text += "\n" + tag + "\n" + hint
 
-    try:
-        if d.get("photo_id"):
-            if d.get("photo_is_doc"):
-                group_msg = await context.bot.send_document(
-                    chat_id=GROUP_CHAT_ID, document=d["photo_id"],
-                    caption=group_text, message_thread_id=GROUP_TOPIC_ID,
+    # Склад — відправляємо особисто Мілі + сповіщаємо адміна
+    if dept == "Склад":
+        try:
+            if MILA_CHAT_ID:
+                mila_text = (
+                    f"📦 Нова заявка на списання {request_id}\n"
+                    f"Від: {user_name}\n\n"
+                    f"🔢 Замовлення: #{d['order_num']}\n"
+                    f"🪑 Виріб: {d['product']}\n"
+                    f"📝 Деталі: {d['details']}\n"
                 )
+                if d.get("deadline"):
+                    mila_text += f"📅 Дедлайн: {d['deadline']}\n"
+                mila_text += f"\nБудь ласка, вкажіть номер видаткової накладної або ордеру на видачу у відповідь."
+
+                if d.get("photo_id"):
+                    if d.get("photo_is_doc"):
+                        mila_msg = await context.bot.send_document(
+                            chat_id=MILA_CHAT_ID, document=d["photo_id"],
+                            caption=mila_text,
+                        )
+                    else:
+                        mila_msg = await context.bot.send_photo(
+                            chat_id=MILA_CHAT_ID, photo=d["photo_id"],
+                            caption=mila_text,
+                        )
+                else:
+                    mila_msg = await context.bot.send_message(
+                        chat_id=MILA_CHAT_ID,
+                        text=mila_text,
+                    )
+                msg_id = mila_msg.message_id
+
+                # Сповіщаємо адміна з кнопкою відповіді
+                if ADMIN_CHAT_ID:
+                    admin_kb = [[InlineKeyboardButton(
+                        "✍️ Відповісти самому",
+                        callback_data=f"admin_reply_{request_id}_{chat_id}"
+                    )]]
+                    await context.bot.send_message(
+                        chat_id=ADMIN_CHAT_ID,
+                        text=f"📋 Заявка {request_id} на списання від {user_name} передана @{MILA_USERNAME}",
+                        reply_markup=InlineKeyboardMarkup(admin_kb),
+                    )
+                logger.info(f"Склад request {request_id} sent to Mila")
             else:
-                group_msg = await context.bot.send_photo(
-                    chat_id=GROUP_CHAT_ID, photo=d["photo_id"],
-                    caption=group_text, message_thread_id=GROUP_TOPIC_ID,
+                # Міла ще не писала /start — відправляємо в групу як fallback
+                logger.warning(f"Mila chat_id unknown, falling back to group for {request_id}")
+                if d.get("photo_id"):
+                    if d.get("photo_is_doc"):
+                        group_msg = await context.bot.send_document(
+                            chat_id=GROUP_CHAT_ID, document=d["photo_id"],
+                            caption=group_text, message_thread_id=GROUP_TOPIC_ID,
+                        )
+                    else:
+                        group_msg = await context.bot.send_photo(
+                            chat_id=GROUP_CHAT_ID, photo=d["photo_id"],
+                            caption=group_text, message_thread_id=GROUP_TOPIC_ID,
+                        )
+                else:
+                    group_msg = await context.bot.send_message(
+                        chat_id=GROUP_CHAT_ID,
+                        text=group_text,
+                        message_thread_id=GROUP_TOPIC_ID,
+                    )
+                msg_id = group_msg.message_id
+                if ADMIN_CHAT_ID:
+                    await context.bot.send_message(
+                        chat_id=ADMIN_CHAT_ID,
+                        text=f"⚠️ Заявка {request_id} на списання пішла в групу — @{MILA_USERNAME} ще не активувала бот!",
+                    )
+        except Exception as e:
+            logger.error(f"Mila send error: {e}")
+            msg_id = 0
+
+    else:
+        # Всі інші департаменти — стандартна відправка в групу МТЗ
+        try:
+            if d.get("photo_id"):
+                if d.get("photo_is_doc"):
+                    group_msg = await context.bot.send_document(
+                        chat_id=GROUP_CHAT_ID, document=d["photo_id"],
+                        caption=group_text, message_thread_id=GROUP_TOPIC_ID,
+                    )
+                else:
+                    group_msg = await context.bot.send_photo(
+                        chat_id=GROUP_CHAT_ID, photo=d["photo_id"],
+                        caption=group_text, message_thread_id=GROUP_TOPIC_ID,
+                    )
+            else:
+                group_msg = await context.bot.send_message(
+                    chat_id=GROUP_CHAT_ID,
+                    text=group_text,
+                    message_thread_id=GROUP_TOPIC_ID,
                 )
-        else:
-            group_msg = await context.bot.send_message(
-                chat_id=GROUP_CHAT_ID,
-                text=group_text,
-                message_thread_id=GROUP_TOPIC_ID,
-            )
-        msg_id = group_msg.message_id
-        logger.info(f"Sent to group: {request_id} msg_id={msg_id}")
-    except Exception as e:
-        logger.error(f"Group send error: {e}")
-        msg_id = 0
+            msg_id = group_msg.message_id
+            logger.info(f"Sent to group: {request_id} msg_id={msg_id}")
+            # Сповіщаємо адміна з кнопкою відповісти
+            if ADMIN_CHAT_ID:
+                admin_kb = [[InlineKeyboardButton(
+                    "✍️ Відповісти самому",
+                    callback_data=f"admin_reply_{request_id}_{chat_id}"
+                )]]
+                await context.bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=f"📋 Нова заявка {request_id} | {dept} від {user_name}",
+                    reply_markup=InlineKeyboardMarkup(admin_kb),
+                )
+        except Exception as e:
+            logger.error(f"Group send error: {e}")
+            msg_id = 0
 
     save_to_sheet({
         "request_id": request_id, "created_at": created_at,
@@ -607,6 +704,62 @@ async def step_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Заявку " + request_id + " подано!\n\nЛогіст отримав сповіщення. Відповідь прийде сюди автоматично."
     )
     return ConversationHandler.END
+
+def save_special_chat_id(role: str, chat_id: int):
+    """Зберігає chat_id адміна/Міли в Sheets щоб пережити рестарт"""
+    try:
+        creds_dict = json.loads(GOOGLE_CREDS)
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open_by_key(SHEET_ID)
+        try:
+            ws = spreadsheet.worksheet("ChatIDs")
+        except:
+            ws = spreadsheet.add_worksheet(title="ChatIDs", rows=10, cols=3)
+            ws.append_row(["role", "chat_id", "updated_at"])
+        records = ws.get_all_records()
+        for i, row in enumerate(records, start=2):
+            if row.get("role") == role:
+                ws.update_cell(i, 2, str(chat_id))
+                ws.update_cell(i, 3, now_kyiv().strftime("%d.%m.%Y %H:%M"))
+                return
+        ws.append_row([role, str(chat_id), now_kyiv().strftime("%d.%m.%Y %H:%M")])
+    except Exception as e:
+        logger.error(f"save_special_chat_id error: {e}")
+
+
+def load_special_chat_ids():
+    """Завантажує збережені chat_id при старті"""
+    global ADMIN_CHAT_ID, MILA_CHAT_ID
+    try:
+        creds_dict = json.loads(GOOGLE_CREDS)
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open_by_key(SHEET_ID)
+        try:
+            ws = spreadsheet.worksheet("ChatIDs")
+        except:
+            return
+        for row in ws.get_all_records():
+            role = row.get("role", "")
+            cid  = row.get("chat_id", "")
+            if role == "ADMIN" and cid:
+                ADMIN_CHAT_ID = int(cid)
+                logger.info(f"Restored ADMIN_CHAT_ID: {ADMIN_CHAT_ID}")
+            elif role == "MILA" and cid:
+                MILA_CHAT_ID = int(cid)
+                logger.info(f"Restored MILA_CHAT_ID: {MILA_CHAT_ID}")
+    except Exception as e:
+        logger.error(f"load_special_chat_ids error: {e}")
+
 
 def save_msg_map_to_sheet(msg_id, chat_id, request_id, product, order_num, dept, tag):
     """Зберігає msg_map у окремий аркуш MsgMap щоб пережити рестарт"""
@@ -719,15 +872,30 @@ async def reminder_loop(app):
                         "Склад": "4 години", "Компенсація": "4 години"
                     }.get(dept, "")
                     try:
-                        await app.bot.send_message(
-                            chat_id=GROUP_CHAT_ID,
-                            text=(
-                                "⚠️ Нагадування!\n\n"
-                                "Заявка " + request_id + " без відповіді вже " + time_label + ".\n\n"
-                                + tag + " — будь ласка, дайте відповідь."
-                            ),
-                            message_thread_id=GROUP_TOPIC_ID,
-                        )
+                        if dept == "Склад" and MILA_CHAT_ID:
+                            await app.bot.send_message(
+                                chat_id=MILA_CHAT_ID,
+                                text=(
+                                    f"⚠️ Нагадування!\n\n"
+                                    f"Заявка {request_id} на списання очікує відповіді вже {time_label}.\n"
+                                    f"Будь ласка, вкажіть номер видаткової або ордеру."
+                                ),
+                            )
+                            if ADMIN_CHAT_ID:
+                                await app.bot.send_message(
+                                    chat_id=ADMIN_CHAT_ID,
+                                    text=f"⚠️ Заявка {request_id} (Склад) — нагадування надіслано Мілі",
+                                )
+                        else:
+                            await app.bot.send_message(
+                                chat_id=GROUP_CHAT_ID,
+                                text=(
+                                    "⚠️ Нагадування!\n\n"
+                                    "Заявка " + request_id + " без відповіді вже " + time_label + ".\n\n"
+                                    + tag + " — будь ласка, дайте відповідь."
+                                ),
+                                message_thread_id=GROUP_TOPIC_ID,
+                            )
                         increment_reminder_count(request_id)
                         logger.info(f"Reminder sent for {request_id}")
                     except Exception as e:
@@ -742,24 +910,39 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or not msg.reply_to_message:
         return
-    if msg.chat.id != GROUP_CHAT_ID:
-        return
 
     replied_id = msg.reply_to_message.message_id
     msg_map = context.bot_data.get("msg_map", {})
+
+    # Перевіряємо чи це відповідь від Міли в особистому чаті
+    is_mila_reply = (
+        msg.chat.type == "private" and
+        (msg.from_user.username or "") == MILA_USERNAME and
+        replied_id in msg_map
+    )
+
+    # Або стандартна відповідь з групи МТЗ
+    is_group_reply = (
+        msg.chat.id == GROUP_CHAT_ID and
+        replied_id in msg_map
+    )
+
+    if not is_mila_reply and not is_group_reply:
+        return
+
     if replied_id not in msg_map:
         return
 
-    info       = msg_map[replied_id]
-    master_id  = info["chat_id"]
-    request_id = info["request_id"]
-    logist     = msg.from_user.full_name
+    info         = msg_map[replied_id]
+    master_id    = info["chat_id"]
+    request_id   = info["request_id"]
+    logist       = msg.from_user.full_name
     logist_uname = msg.from_user.username or ""
 
     update_sheet_status(request_id, "В роботі", msg.text or "", record_response=True,
                         logist_name=logist, logist_username=logist_uname)
 
-    # Записуємо час реакції логіста (реальний час від подачі до відповіді)
+    # Час реакції
     try:
         sheet = get_sheet()
         headers = sheet.row_values(1)
@@ -800,6 +983,19 @@ async def handle_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data["logist_" + request_id] = logist
     context.bot_data["time_" + request_id]   = response_time_str
     context.bot_data["logist_msg_id_" + request_id] = msg.message_id
+
+    # Якщо відповідає Міла — сповіщаємо адміна
+    if is_mila_reply and ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=(
+                    f"✅ Міла відповіла на заявку {request_id}:\n\n"
+                    f"{msg.text or '—'}"
+                ),
+            )
+        except Exception as e:
+            logger.error(f"Admin notify error: {e}")
 
     # Нагадування тепер через reminder_loop + Sheets — job_queue не використовується
     kb = [
@@ -1368,15 +1564,88 @@ async def all_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text)
 
+async def admin_reply_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Адмін натиснув 'Відповісти самому' — просимо ввести текст"""
+    q = update.callback_query
+    await q.answer()
+    uname = q.from_user.username or ""
+    if uname != ADMIN_USERNAME:
+        return ConversationHandler.END
+
+    # callback_data: admin_reply_{request_id}_{master_chat_id}
+    parts = q.data.split("_")
+    # admin_reply_REQ-0041_123456789
+    request_id    = parts[2]
+    master_chat_id = parts[3]
+
+    context.user_data["admin_reply_request_id"]    = request_id
+    context.user_data["admin_reply_master_chat_id"] = master_chat_id
+
+    await q.edit_message_reply_markup(reply_markup=None)
+    await q.message.reply_text(
+        f"✍️ Введіть відповідь на заявку {request_id}:\n"
+        f"(або /cancel щоб скасувати)"
+    )
+    return ADMIN_REPLY
+
+
+async def admin_reply_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отримуємо текст від адміна і відправляємо менеджеру"""
+    uname = update.effective_user.username or ""
+    if uname != ADMIN_USERNAME:
+        return ConversationHandler.END
+
+    reply_text     = update.message.text
+    request_id     = context.user_data.get("admin_reply_request_id", "")
+    master_chat_id = int(context.user_data.get("admin_reply_master_chat_id", 0))
+
+    if not request_id or not master_chat_id:
+        await update.message.reply_text("❌ Помилка — не знайдено заявку.")
+        return ConversationHandler.END
+
+    # Відправляємо менеджеру
+    try:
+        kb = [
+            [InlineKeyboardButton("✅ Виконано, дякую!", callback_data=f"done_{request_id}_0")],
+            [InlineKeyboardButton("❌ Не вирішено",      callback_data=f"reject_{request_id}_0")],
+        ]
+        await context.bot.send_message(
+            chat_id=master_chat_id,
+            text=(
+                f"Відповідь на заявку {request_id}\n\n"
+                f"👤 Відповів: Роман (МТЗ)\n\n"
+                f"{reply_text}"
+            ),
+            reply_markup=InlineKeyboardMarkup(kb),
+        )
+        # Оновлюємо Sheets
+        update_sheet_status(
+            request_id, "В роботі", reply_text,
+            record_response=True,
+            logist_name=update.effective_user.full_name,
+            logist_username=uname,
+        )
+        await update.message.reply_text(f"✅ Відповідь на {request_id} відправлена менеджеру.")
+        logger.info(f"Admin replied to {request_id}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Помилка відправки: {e}")
+        logger.error(f"Admin reply error: {e}")
+
+    context.user_data.pop("admin_reply_request_id", None)
+    context.user_data.pop("admin_reply_master_chat_id", None)
+    return ConversationHandler.END
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Скасовано. Натисніть /start")
     return ConversationHandler.END
 
 async def post_init(app):
-    """Викликається після старту — завантажуємо msg_map з Sheets"""
+    """Викликається після старту — завантажуємо msg_map і chat_id з Sheets"""
+    load_special_chat_ids()
     msg_map = load_msg_map_from_sheet()
     app.bot_data["msg_map"] = msg_map
-    logger.info(f"Bot started. Loaded {len(msg_map)} msg_map entries from Sheets.")
+    logger.info(f"Bot started. Loaded {len(msg_map)} msg_map entries. ADMIN={ADMIN_CHAT_ID} MILA={MILA_CHAT_ID}")
     # Запускаємо фоновий цикл нагадувань
     asyncio.create_task(reminder_loop(app))
 
@@ -1415,6 +1684,18 @@ def main():
     )
 
     app.add_handler(conv)
+
+    # Admin reply conversation
+    admin_reply_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_reply_start, pattern="^admin_reply_")],
+        states={
+            ADMIN_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_reply_send)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,
+    )
+    app.add_handler(admin_reply_conv)
+
     app.add_handler(CallbackQueryHandler(handle_done, pattern="^done_"))
     app.add_handler(CommandHandler("mytasks", my_tasks))
     app.add_handler(CommandHandler("myqueue", my_queue))
@@ -1422,8 +1703,14 @@ def main():
     app.add_handler(CommandHandler("sync", sync_requests))
     app.add_handler(CommandHandler("cleanup", cleanup_old))
     app.add_handler(CommandHandler("debug", debug_sheet))
+    # Відповіді з групи МТЗ
     app.add_handler(MessageHandler(
         filters.Chat(GROUP_CHAT_ID) & filters.REPLY & filters.TEXT,
+        handle_reply
+    ))
+    # Відповіді від Міли в особистому чаті (reply на повідомлення боту)
+    app.add_handler(MessageHandler(
+        filters.ChatType.PRIVATE & filters.REPLY & filters.TEXT & ~filters.COMMAND,
         handle_reply
     ))
 
